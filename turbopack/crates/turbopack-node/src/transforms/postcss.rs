@@ -413,17 +413,22 @@ pub(crate) async fn config_loader_source(
 
     // We don't want to bundle the config file, so we load it with `import()`.
     // Bundling would break the ability to use `require.resolve` in the config file.
+    // Resolve string plugins from the config location before passing them to the
+    // evaluated transform module, whose own `module.require` has a different
+    // resolution base.
     #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     let code = formatdoc! {
         r#"
+            import {{ createRequire }} from 'node:module';
             import {{ pathToFileURL }} from 'node:url';
             import path from 'node:path';
 
             const configPath = {config_path_expr};
             const configUrl = pathToFileURL(configPath).toString();
+            const requireConfig = createRequire(configUrl);
             let mod;
             try {{
-                mod = module.require(configPath);
+                mod = requireConfig(configPath);
             }} catch (error) {{
                 if (
                     error == null ||
@@ -439,7 +444,49 @@ pub(crate) async fn config_loader_source(
                 mod = await {TURBOPACK_EXTERNAL_IMPORT}(configUrl);
             }}
 
-            export default mod.default ?? mod;
+            const resolvePlugin = (plugin) => requireConfig.resolve(plugin);
+            const normalizePlugin = (plugin) => {{
+                if (typeof plugin === 'string') {{
+                    return [resolvePlugin(plugin), {{}}];
+                }}
+
+                if (Array.isArray(plugin) && typeof plugin[0] === 'string') {{
+                    return [resolvePlugin(plugin[0]), plugin[1]];
+                }}
+
+                return plugin;
+            }};
+            const normalizePlugins = (plugins) => {{
+                if (Array.isArray(plugins)) {{
+                    return plugins.map(normalizePlugin);
+                }}
+
+                if (plugins && typeof plugins === 'object') {{
+                    return Object.fromEntries(
+                        Object.entries(plugins).map(([plugin, options]) => [
+                            resolvePlugin(plugin),
+                            options,
+                        ]),
+                    );
+                }}
+
+                return plugins;
+            }};
+            const normalizeConfig = (config) => {{
+                if (!config || typeof config !== 'object') {{
+                    return config;
+                }}
+
+                return {{
+                    ...config,
+                    plugins: normalizePlugins(config.plugins),
+                }};
+            }};
+
+            const config = mod.default ?? mod;
+            export default typeof config === 'function'
+                ? async (...args) => normalizeConfig(await config(...args))
+                : normalizeConfig(config);
         "#,
         config_path_expr = config_path_expr,
     };
