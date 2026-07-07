@@ -234,7 +234,7 @@ function registerExportsAndSetupBoundaryForReactRefresh(
   module: HotModule,
   helpers: RefreshHelpers
 ) {
-  const currentExports = module.exports
+  const currentExports = getAsyncModuleExports(module.exports)
   const prevExports = module.hot.data.prevExports ?? null
 
   helpers.registerExportsForReactRefresh(currentExports, module.id)
