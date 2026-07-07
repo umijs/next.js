@@ -43,6 +43,18 @@ type RefreshContext = {
 
 type RefreshHelpers = RefreshRuntimeGlobals['$RefreshHelpers$']
 
+function getRefreshBoundaryExports<T>(exports: T): T {
+  if (
+    typeof isAsyncModuleExt === 'function' &&
+    exports != null &&
+    typeof exports === 'object' &&
+    isAsyncModuleExt(exports)
+  ) {
+    return exports[turbopackExports] as T
+  }
+  return exports
+}
+
 type ModuleFactory = (
   this: Module['exports'],
   context: TurbopackDevContext
@@ -234,7 +246,7 @@ function registerExportsAndSetupBoundaryForReactRefresh(
   module: HotModule,
   helpers: RefreshHelpers
 ) {
-  const currentExports = getAsyncModuleExports(module.exports)
+  const currentExports = getRefreshBoundaryExports(module.exports)
   const prevExports = module.hot.data.prevExports ?? null
 
   helpers.registerExportsForReactRefresh(currentExports, module.id)

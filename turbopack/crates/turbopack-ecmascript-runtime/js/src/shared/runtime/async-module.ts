@@ -50,17 +50,6 @@ function isAsyncModuleExt<T extends {}>(obj: T): obj is AsyncModuleExt & T {
   return turbopackQueues in obj
 }
 
-function getAsyncModuleExports<T>(exports: T): T {
-  if (
-    exports != null &&
-    typeof exports === 'object' &&
-    isAsyncModuleExt(exports)
-  ) {
-    return exports[turbopackExports] as T
-  }
-  return exports
-}
-
 function createPromise<T>() {
   let resolve: (value: T | PromiseLike<T>) => void
   let reject: (reason?: any) => void
