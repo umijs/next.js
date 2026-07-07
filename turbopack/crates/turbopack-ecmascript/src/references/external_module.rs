@@ -314,6 +314,16 @@ impl CachedExternalModule {
             || self.external_type == CachedExternalType::EcmaScriptViaRequire
         {
             writeln!(code, "{TURBOPACK_EXPORT_NAMESPACE}(mod);")?;
+        } else if self.external_type == CachedExternalType::Promise {
+            writeln!(code, "var ns = Object.create(null);")?;
+            writeln!(
+                code,
+                "if (mod && (typeof mod === 'object' || typeof mod === 'function')) {{"
+            )?;
+            writeln!(code, "  for (var key in mod) ns[key] = mod[key];")?;
+            writeln!(code, "}}")?;
+            writeln!(code, "ns.default = mod;")?;
+            writeln!(code, "{TURBOPACK_EXPORT_NAMESPACE}(ns);")?;
         } else if self.external_type == CachedExternalType::Script {
             writeln!(code, "var ns = Object.create(null);")?;
             writeln!(code, "for (var key in mod) ns[key] = mod[key];")?;
