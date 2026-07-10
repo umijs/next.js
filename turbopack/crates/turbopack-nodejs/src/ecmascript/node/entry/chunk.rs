@@ -177,7 +177,9 @@ impl EcmascriptBuildNodeEntryChunk {
     async fn runtime_chunk(&self) -> Result<Vc<EcmascriptBuildNodeRuntimeChunk>> {
         // Detect async modules from the whole-app graph in production. In development, the graph
         // is per-page. To keep the shared `runtime.js` stable, always include the machinery.
-        let has_async_modules = if matches!(
+        let has_async_modules = if *self.chunking_context.include_async_module_runtime().await? {
+            true
+        } else if matches!(
             *self.chunking_context.runtime_type().await?,
             RuntimeType::Production
         ) {

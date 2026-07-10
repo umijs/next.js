@@ -108,6 +108,11 @@ impl NodeJsChunkingContextBuilder {
         self
     }
 
+    pub fn include_async_module_runtime(mut self, include_async_module_runtime: bool) -> Self {
+        self.chunking_context.include_async_module_runtime = include_async_module_runtime;
+        self
+    }
+
     pub fn manifest_chunks(mut self, manifest_chunks: bool) -> Self {
         self.chunking_context.manifest_chunks = manifest_chunks;
         self
@@ -207,6 +212,9 @@ pub struct NodeJsChunkingContext {
     environment: ResolvedVc<Environment>,
     /// The kind of runtime to include in the output.
     runtime_type: RuntimeType,
+    /// Always include async-module support, even when the static module graph does not report any
+    /// async modules. This is needed by evaluators that dynamically import arbitrary modules.
+    include_async_module_runtime: bool,
     /// Enable nested async availability for this chunking
     enable_nested_async_availability: bool,
     /// Enable module merging
@@ -270,6 +278,7 @@ impl NodeJsChunkingContext {
                 enable_dynamic_chunk_content_loading: false,
                 environment,
                 runtime_type,
+                include_async_module_runtime: false,
                 minify_type: MinifyType::NoMinify,
                 source_maps_type: SourceMapsType::Full,
                 manifest_chunks: false,
@@ -296,6 +305,11 @@ impl NodeJsChunkingContext {
     #[turbo_tasks::function]
     pub fn runtime_type(&self) -> Vc<RuntimeType> {
         self.runtime_type.cell()
+    }
+
+    #[turbo_tasks::function]
+    pub fn include_async_module_runtime(&self) -> Vc<bool> {
+        Vc::cell(self.include_async_module_runtime)
     }
 
     /// Returns the minify type.
