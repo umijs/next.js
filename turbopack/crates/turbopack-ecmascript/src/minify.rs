@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use bytes_str::BytesStr;
-use rustc_hash::FxHashSet;
 use swc_core::{
     atoms::atom,
     base::try_with_handler,
     common::{
         BytePos, FileName, FilePathMapping, GLOBALS, LineCol, Mark, SourceMap as SwcSourceMap,
-        comments::{CommentKind, Comments, SingleThreadedComments},
+        Span,
+        comments::{Comment, CommentKind, Comments, SingleThreadedComments},
     },
     ecma::{
         self,
@@ -23,7 +23,7 @@ use swc_core::{
             fixer::paren_remover,
             hygiene::{self, hygiene_with_config},
         },
-        visit::VisitWith,
+        visit::{Visit, VisitWith},
     },
 };
 use tracing::instrument;
@@ -139,10 +139,6 @@ fn minify_internal(
                         Default::default()
                     };
 
-                    let legal_comments = extract_legal_comments
-                        .then(|| collect_legal_comments(&comments))
-                        .unwrap_or_default();
-
                     let unresolved_mark = Mark::new();
                     let top_level_mark = Mark::new();
 
@@ -191,6 +187,12 @@ fn minify_internal(
                         }));
                     }
 
+                    let legal_comments = if extract_legal_comments {
+                        collect_legal_comments(&comments, &program)
+                    } else {
+                        Vec::new()
+                    };
+
                     let program = program.apply(ecma::transforms::base::fixer::fixer(Some(
                         &comments as &dyn Comments,
                     )));
@@ -227,39 +229,97 @@ fn minify_internal(
     Ok((builder.build(), legal_comments))
 }
 
-fn collect_legal_comments(comments: &SingleThreadedComments) -> Vec<String> {
-    let (leading, trailing) = comments.borrow_all();
-    let mut comments = leading
-        .values()
-        .chain(trailing.values())
-        .flatten()
-        .filter(|comment| is_legal_comment(comment.text.as_ref()))
-        .map(|comment| {
-            let text = match comment.kind {
-                CommentKind::Line => format!("//{}", comment.text),
-                CommentKind::Block => format!("/*{}*/", comment.text),
-            };
-            (comment.span.lo, text)
-        })
-        .collect::<Vec<_>>();
+struct LegalCommentsCollector<'a> {
+    comments: &'a SingleThreadedComments,
+    legal_comments: Vec<(BytePos, String)>,
+}
 
-    comments.sort_by(|(a_position, a_comment), (b_position, b_comment)| {
-        a_position
-            .cmp(b_position)
-            .then_with(|| a_comment.cmp(b_comment))
-    });
-    let mut seen = FxHashSet::default();
-    comments.retain(|(_, comment)| seen.insert(comment.clone()));
-    comments.into_iter().map(|(_, comment)| comment).collect()
+impl<'a> LegalCommentsCollector<'a> {
+    fn new(comments: &'a SingleThreadedComments) -> Self {
+        Self {
+            comments,
+            legal_comments: Vec::new(),
+        }
+    }
+
+    fn collect(&mut self, comments: Option<Vec<Comment>>) -> Vec<Comment> {
+        let Some(comments) = comments else {
+            return Vec::new();
+        };
+        let mut remaining = Vec::new();
+        for comment in comments {
+            if is_legal_comment(comment.text.as_ref()) {
+                let text = match comment.kind {
+                    CommentKind::Line => format!("//{}", comment.text),
+                    CommentKind::Block => format!("/*{}*/", comment.text),
+                };
+                self.legal_comments.push((comment.span.lo, text));
+            } else {
+                remaining.push(comment);
+            }
+        }
+        remaining
+    }
+
+    fn collect_leading(&mut self, pos: BytePos) {
+        let remaining = self.collect(self.comments.take_leading(pos));
+        if !remaining.is_empty() {
+            self.comments.add_leading_comments(pos, remaining);
+        }
+    }
+
+    fn collect_trailing(&mut self, pos: BytePos) {
+        let remaining = self.collect(self.comments.take_trailing(pos));
+        if !remaining.is_empty() {
+            self.comments.add_trailing_comments(pos, remaining);
+        }
+    }
+
+    fn into_comments(self) -> Vec<String> {
+        let mut comments = self.legal_comments;
+        comments.sort_by(|(a_position, a_comment), (b_position, b_comment)| {
+            a_comment
+                .cmp(b_comment)
+                .then_with(|| a_position.cmp(b_position))
+        });
+        comments.dedup_by(|a, b| a.1 == b.1);
+        comments.sort_by_key(|(position, _)| *position);
+        comments.into_iter().map(|(_, comment)| comment).collect()
+    }
+}
+
+impl Visit for LegalCommentsCollector<'_> {
+    fn visit_span(&mut self, span: &Span) {
+        if span.is_dummy() {
+            return;
+        }
+
+        self.collect_leading(span.lo);
+        self.collect_trailing(span.hi);
+
+        if span.hi > span.lo {
+            self.collect_leading(span.hi - BytePos(1));
+            self.collect_trailing(span.lo + BytePos(1));
+        }
+    }
+}
+
+fn collect_legal_comments(comments: &SingleThreadedComments, program: &Program) -> Vec<String> {
+    let mut collector = LegalCommentsCollector::new(comments);
+    program.visit_children_with(&mut collector);
+    collector.into_comments()
 }
 
 fn is_legal_comment(comment: &str) -> bool {
     let comment = comment.trim_start();
+    if comment.trim_start_matches('*').starts_with('!') {
+        return true;
+    }
+    if !comment.contains('@') {
+        return false;
+    }
     let lowercase = comment.to_ascii_lowercase();
-    comment.trim_start_matches('*').starts_with('!')
-        || lowercase.contains("@preserve")
-        || lowercase.contains("@lic")
-        || lowercase.contains("@cc_on")
+    lowercase.contains("@preserve") || lowercase.contains("@lic") || lowercase.contains("@cc_on")
 }
 
 // From https://github.com/swc-project/swc/blob/11efd4e7c5e8081f8af141099d3459c3534c1e1d/crates/swc/src/lib.rs#L523-L560
@@ -303,7 +363,7 @@ fn print_program(
 mod tests {
     use turbopack_core::code_builder::CodeBuilder;
 
-    use super::minify_with_legal_comments;
+    use super::{default_compress_options, minify_with_legal_comments};
 
     #[test]
     fn extracts_and_deduplicates_legal_comments() {
@@ -330,5 +390,28 @@ mod tests {
                 "// @preserve line license",
             ]
         );
+    }
+
+    #[test]
+    fn excludes_legal_comments_from_discarded_code() {
+        let mut builder = CodeBuilder::default();
+        builder += r#"
+            if (false) {
+                /*! discarded package license */
+                console.log("unused");
+            }
+            /*! retained package license */
+            console.log("used");
+        "#;
+
+        let (_, comments) = minify_with_legal_comments(
+            builder.build(),
+            false,
+            None,
+            Some(default_compress_options(None)),
+        )
+        .unwrap();
+
+        assert_eq!(comments, vec!["/*! retained package license */"]);
     }
 }
