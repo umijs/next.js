@@ -16,6 +16,7 @@ use bincode::{Decode, Encode};
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use notify::{Config, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use notify_types::event::{EventKind, MetadataKind, ModifyKind, RenameMode};
+use regex::RegexSet;
 use rustc_hash::FxHashSet;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tracing::instrument;
@@ -70,6 +71,9 @@ pub(crate) struct DiskWatcher {
     /// Paths to ignore when watching for file changes
     #[bincode(skip)]
     ignored_paths: Arc<Vec<RcStr>>,
+    /// Package name regular expressions that opt dependencies back into watching.
+    #[bincode(skip)]
+    node_modules_regexes: Option<Arc<RegexSet>>,
 }
 
 enum State {
@@ -358,29 +362,43 @@ impl DiskWatcher {
         Self::new_with_ignored_paths(vec![])
     }
 
+    /// Creates a watcher with ignored path components. Entries prefixed with
+    /// `!node_modules/` are package-name regular expressions that opt dependencies back in.
     pub fn new_with_ignored_paths(ignored_paths: Vec<RcStr>) -> Self {
+        const NODE_MODULES_NEGATED_REGEX_PREFIX: &str = "!node_modules/";
+
+        let mut paths = Vec::with_capacity(ignored_paths.len());
+        let mut node_modules_regexes = Vec::new();
+        for ignored in ignored_paths {
+            if let Some(pattern) = ignored.strip_prefix(NODE_MODULES_NEGATED_REGEX_PREFIX) {
+                node_modules_regexes.push(RcStr::from(pattern));
+            } else {
+                paths.push(ignored);
+            }
+        }
+
+        let node_modules_regexes = if node_modules_regexes.is_empty() {
+            None
+        } else {
+            RegexSet::new(node_modules_regexes.iter().map(RcStr::as_str))
+                .ok()
+                .map(Arc::new)
+        };
+
         Self {
             state: State::new_stopped(),
-            ignored_paths: Arc::new(ignored_paths),
+            ignored_paths: Arc::new(paths),
+            node_modules_regexes,
         }
     }
 
     /// Check if a path should be ignored based on configured ignore patterns
     fn should_ignore_path(&self, path: &Path) -> bool {
-        if self.ignored_paths.is_empty() {
-            return false;
-        }
-        path.components().any(|component| {
-            if let Component::Normal(name) = component
-                && let Some(name_str) = name.to_str()
-            {
-                return self
-                    .ignored_paths
-                    .iter()
-                    .any(|ignored| ignored.as_str() == name_str);
-            }
-            false
-        })
+        should_ignore_path(
+            path,
+            &self.ignored_paths,
+            self.node_modules_regexes.as_deref(),
+        )
     }
 
     /// Create a watcher and start watching by creating `debounced` watcher
@@ -515,6 +533,7 @@ impl DiskWatcher {
         let fs_inner_arc = fs_inner.clone();
         let root_path = fs_inner_arc.root_path();
         let ignored_paths = self.ignored_paths.clone();
+        let node_modules_regexes = self.node_modules_regexes.clone();
         let watch_dir = wasm_fs_offload::CLIENT
             .watch_dir(root_path, true, move |event| {
                 let paths: Vec<PathBuf> = if ignored_paths.is_empty() {
@@ -524,16 +543,11 @@ impl DiskWatcher {
                         .paths
                         .into_iter()
                         .filter(|path| {
-                            !path.components().any(|component| {
-                                if let Component::Normal(name) = component {
-                                    if let Some(name_str) = name.to_str() {
-                                        return ignored_paths
-                                            .iter()
-                                            .any(|ignored| ignored.as_str() == name_str);
-                                    }
-                                }
-                                false
-                            })
+                            !should_ignore_path(
+                                path,
+                                &ignored_paths,
+                                node_modules_regexes.as_deref(),
+                            )
                         })
                         .collect()
                 };
@@ -962,6 +976,59 @@ impl DiskWatcher {
     }
 }
 
+fn should_ignore_path(
+    path: &Path,
+    ignored_paths: &[RcStr],
+    node_modules_regexes: Option<&RegexSet>,
+) -> bool {
+    if ignored_paths.is_empty() {
+        return false;
+    }
+
+    let watch_node_module = node_modules_regexes
+        .map(|regexes| matches_node_module_package(path, regexes))
+        .unwrap_or(false);
+
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+
+        ignored_paths.iter().any(|ignored| {
+            ignored.as_str() == name && (name != "node_modules" || !watch_node_module)
+        })
+    })
+}
+
+fn matches_node_module_package(path: &Path, regexes: &RegexSet) -> bool {
+    let mut components = path.components().filter_map(|component| match component {
+        Component::Normal(name) => name.to_str(),
+        _ => None,
+    });
+    let mut matches = false;
+
+    while let Some(component) = components.next() {
+        if component != "node_modules" {
+            continue;
+        }
+        let Some(first) = components.next() else {
+            continue;
+        };
+        if first.starts_with('@') {
+            if let Some(second) = components.next() {
+                matches = regexes.is_match(&format!("{first}/{second}"));
+            }
+        } else {
+            matches = regexes.is_match(first);
+        }
+    }
+
+    matches
+}
+
 #[instrument(
     parent = None,
     level = "info",
@@ -1058,5 +1125,55 @@ impl InvalidationReasonKind for InvalidateRescanKind {
                 .unwrap()
                 .path
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::DiskWatcher;
+
+    #[test]
+    fn watches_matching_node_modules_packages() {
+        let watcher = DiskWatcher::new_with_ignored_paths(vec![
+            "node_modules".into(),
+            "!node_modules/rc-.*".into(),
+            "!node_modules/.*cssinjs.*".into(),
+            "!node_modules/@rc-component/.*".into(),
+        ]);
+
+        for path in [
+            "project/node_modules/rc-util/index.js",
+            "project/node_modules/@ant-design/cssinjs/index.js",
+            "project/node_modules/@rc-component/trigger/index.js",
+            "project/node_modules/.pnpm/rc-util@5.0.0/node_modules/rc-util/index.js",
+        ] {
+            assert!(!watcher.should_ignore_path(Path::new(path)));
+        }
+    }
+
+    #[test]
+    fn ignores_non_matching_node_modules_packages() {
+        let watcher = DiskWatcher::new_with_ignored_paths(vec![
+            "node_modules".into(),
+            "!node_modules/rc-.*".into(),
+        ]);
+
+        assert!(watcher.should_ignore_path(Path::new("project/node_modules/react/index.js")));
+        assert!(watcher.should_ignore_path(Path::new(
+            "project/node_modules/rc-util/node_modules/react/index.js",
+        )));
+        assert!(!watcher.should_ignore_path(Path::new("project/src/index.js")));
+    }
+
+    #[test]
+    fn ignores_invalid_node_modules_regexes() {
+        let watcher = DiskWatcher::new_with_ignored_paths(vec![
+            "node_modules".into(),
+            "!node_modules/[".into(),
+        ]);
+
+        assert!(watcher.should_ignore_path(Path::new("project/node_modules/rc-util/index.js",)));
     }
 }
