@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use bytes_str::BytesStr;
+use rustc_hash::FxHashSet;
 use swc_core::{
     atoms::atom,
     base::try_with_handler,
     common::{
         BytePos, FileName, FilePathMapping, GLOBALS, LineCol, Mark, SourceMap as SwcSourceMap,
-        comments::{Comments, SingleThreadedComments},
+        comments::{CommentKind, Comments, SingleThreadedComments},
     },
     ecma::{
         self,
@@ -76,6 +77,26 @@ pub fn minify(
     mangle: Option<MangleType>,
     compress: Option<CompressOptions>,
 ) -> Result<Code> {
+    Ok(minify_internal(code, source_maps, mangle, compress, false)?.0)
+}
+
+#[instrument(level = "info", name = "minify ecmascript code", skip_all)]
+pub fn minify_with_legal_comments(
+    code: Code,
+    source_maps: bool,
+    mangle: Option<MangleType>,
+    compress: Option<CompressOptions>,
+) -> Result<(Code, Vec<String>)> {
+    minify_internal(code, source_maps, mangle, compress, true)
+}
+
+fn minify_internal(
+    code: Code,
+    source_maps: bool,
+    mangle: Option<MangleType>,
+    compress: Option<CompressOptions>,
+    extract_legal_comments: bool,
+) -> Result<(Code, Vec<String>)> {
     // Pass None for the debug ID so we don't needlessly compute it for the pre-minified content, it
     // will be added by the Code object returned from this function
     let source_maps = source_maps.then(|| code.generate_source_map_ref(None));
@@ -84,7 +105,7 @@ pub fn minify(
     let source_code = BytesStr::from_utf8(code.into_source_code().into_bytes())?;
 
     let cm = Arc::new(SwcSourceMap::new(FilePathMapping::empty()));
-    let (src, mut src_map_buf, source_map_names) = {
+    let (src, mut src_map_buf, source_map_names, legal_comments) = {
         let fm = cm.new_source_file(FileName::Anon.into(), source_code);
 
         // Collect all comments and pass to the minifier so that `PURE` comments are respected.
@@ -98,7 +119,7 @@ pub fn minify(
         );
         let mut parser = Parser::new_from(lexer);
 
-        let (program, source_map_names) =
+        let (program, source_map_names, legal_comments) =
             try_with_handler(cm.clone(), Default::default(), |handler| {
                 GLOBALS.set(&Default::default(), || {
                     let program = match parser.parse_program() {
@@ -117,6 +138,10 @@ pub fn minify(
                     } else {
                         Default::default()
                     };
+
+                    let legal_comments = extract_legal_comments
+                        .then(|| collect_legal_comments(&comments))
+                        .unwrap_or_default();
 
                     let unresolved_mark = Mark::new();
                     let top_level_mark = Mark::new();
@@ -170,13 +195,13 @@ pub fn minify(
                         &comments as &dyn Comments,
                     )));
 
-                    Ok((program, source_map_names))
+                    Ok((program, source_map_names, legal_comments))
                 })
             })
             .map_err(|e| e.to_pretty_error())?;
 
         let (src, src_map_buf) = print_program(cm.clone(), program, source_maps.is_some())?;
-        (src, src_map_buf, source_map_names)
+        (src, src_map_buf, source_map_names, legal_comments)
     };
 
     let mut builder = CodeBuilder::new(source_maps.is_some(), generate_debug_id);
@@ -199,7 +224,42 @@ pub fn minify(
     } else {
         builder.push_source(&src.into(), None);
     }
-    Ok(builder.build())
+    Ok((builder.build(), legal_comments))
+}
+
+fn collect_legal_comments(comments: &SingleThreadedComments) -> Vec<String> {
+    let (leading, trailing) = comments.borrow_all();
+    let mut comments = leading
+        .values()
+        .chain(trailing.values())
+        .flatten()
+        .filter(|comment| is_legal_comment(comment.text.as_ref()))
+        .map(|comment| {
+            let text = match comment.kind {
+                CommentKind::Line => format!("//{}", comment.text),
+                CommentKind::Block => format!("/*{}*/", comment.text),
+            };
+            (comment.span.lo, text)
+        })
+        .collect::<Vec<_>>();
+
+    comments.sort_by(|(a_position, a_comment), (b_position, b_comment)| {
+        a_position
+            .cmp(b_position)
+            .then_with(|| a_comment.cmp(b_comment))
+    });
+    let mut seen = FxHashSet::default();
+    comments.retain(|(_, comment)| seen.insert(comment.clone()));
+    comments.into_iter().map(|(_, comment)| comment).collect()
+}
+
+fn is_legal_comment(comment: &str) -> bool {
+    let comment = comment.trim_start();
+    let lowercase = comment.to_ascii_lowercase();
+    comment.trim_start_matches('*').starts_with('!')
+        || lowercase.contains("@preserve")
+        || lowercase.contains("@lic")
+        || lowercase.contains("@cc_on")
 }
 
 // From https://github.com/swc-project/swc/blob/11efd4e7c5e8081f8af141099d3459c3534c1e1d/crates/swc/src/lib.rs#L523-L560
@@ -237,4 +297,38 @@ fn print_program(
     };
 
     Ok((src, src_map_buf))
+}
+
+#[cfg(test)]
+mod tests {
+    use turbopack_core::code_builder::CodeBuilder;
+
+    use super::minify_with_legal_comments;
+
+    #[test]
+    fn extracts_and_deduplicates_legal_comments() {
+        let mut builder = CodeBuilder::default();
+        builder += r#"
+            /*! package license */
+            /**! starred bang license */
+            /** @license another package */
+            // @preserve line license
+            /* ordinary comment */
+            const value = 1;
+            /*! package license */
+            console.log(value);
+        "#;
+
+        let (_, comments) = minify_with_legal_comments(builder.build(), false, None, None).unwrap();
+
+        assert_eq!(
+            comments,
+            vec![
+                "/*! package license */",
+                "/**! starred bang license */",
+                "/** @license another package */",
+                "// @preserve line license",
+            ]
+        );
+    }
 }
