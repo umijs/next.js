@@ -23,6 +23,7 @@ use turbopack_core::{
 use turbopack_ecmascript::{
     chunk::{EcmascriptChunkData, EcmascriptChunkPlaceable},
     minify::{get_compress_options, minify},
+    references::external_module::CachedExternalModule,
     utils::StringifyJs,
 };
 use turbopack_ecmascript_runtime::{RuntimeType, browser_runtime_options};
@@ -201,6 +202,12 @@ impl EcmascriptBrowserEvaluateChunk {
         } else {
             true
         };
+        let module_graph = this.module_graph.await?;
+        let has_external_modules = module_graph
+            .iter_reachable_modules()?
+            .any(|module| {
+                ResolvedVc::try_downcast_type::<CachedExternalModule>(module).is_some()
+            });
         match runtime_type {
             RuntimeType::Production | RuntimeType::Development => {
                 let runtime_code = turbopack_ecmascript_runtime::get_browser_runtime_code(
@@ -217,6 +224,7 @@ impl EcmascriptBrowserEvaluateChunk {
                     this.chunking_context.chunk_loading(),
                     browser_runtime_options(
                         has_async_modules,
+                        has_external_modules,
                         this.chunking_context.entry_root_export().owned().await?,
                     ),
                 );
