@@ -17,16 +17,19 @@ use crate::{RuntimeType, embed_js::embed_static_code};
 #[turbo_tasks::value(cell = "new")]
 pub struct BrowserRuntimeOptions {
     pub has_async_modules: bool,
+    pub has_external_modules: bool,
     pub entry_root_export: Option<RcStr>,
 }
 
 #[turbo_tasks::function]
 pub fn browser_runtime_options(
     has_async_modules: bool,
+    has_external_modules: bool,
     entry_root_export: Option<RcStr>,
 ) -> Vc<BrowserRuntimeOptions> {
     BrowserRuntimeOptions {
         has_async_modules,
+        has_external_modules,
         entry_root_export,
     }
     .cell()
@@ -282,7 +285,7 @@ pub async fn get_browser_runtime_code(
         );
     }
 
-    if *environment.supports_commonjs_externals().await? {
+    if options.has_external_modules || *environment.supports_commonjs_externals().await? {
         code.push_code(
             &*embed_static_code(
                 asset_context,
