@@ -1014,6 +1014,7 @@ fn matches_node_module_package(path: &Path, regexes: &RegexSet) -> bool {
         if component != "node_modules" {
             continue;
         }
+        matches = false;
         let Some(first) = components.next() else {
             continue;
         };
@@ -1163,6 +1164,9 @@ mod tests {
         assert!(watcher.should_ignore_path(Path::new("project/node_modules/react/index.js")));
         assert!(watcher.should_ignore_path(Path::new(
             "project/node_modules/rc-util/node_modules/react/index.js",
+        )));
+        assert!(watcher.should_ignore_path(Path::new(
+            "project/node_modules/rc-util/node_modules/@scope",
         )));
         assert!(!watcher.should_ignore_path(Path::new("project/src/index.js")));
     }
