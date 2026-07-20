@@ -17,17 +17,17 @@ export type ClientOptions = {
   addMessageListener: (cb: (msg: WebSocketMessage) => void) => void
   sendMessage: SendMessage
   onUpdateError: (err: unknown) => void
-  chunkUpdateListenersGlobal?: string
+  chunkUpdateListenersGlobal: string
 }
 
-const DEFAULT_CHUNK_UPDATE_LISTENERS_GLOBAL =
+export const TURBOPACK_CHUNK_UPDATE_LISTENERS_GLOBAL =
   'TURBOPACK_CHUNK_UPDATE_LISTENERS'
 
 export function connect({
   addMessageListener,
   sendMessage,
   onUpdateError = console.error,
-  chunkUpdateListenersGlobal = DEFAULT_CHUNK_UPDATE_LISTENERS_GLOBAL,
+  chunkUpdateListenersGlobal,
 }: ClientOptions) {
   addMessageListener((msg) => {
     switch (msg.type) {
