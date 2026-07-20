@@ -584,7 +584,7 @@ function registerChunkList(chunkList: ChunkList) {
   const chunkListPath = getPathFromScript(chunkListScript)
   // The "chunk" is also registered to finish the loading in the backend
   BACKEND.registerChunk(chunkListPath as string as ChunkPath)
-  globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS!.push([
+  CHUNK_UPDATE_LISTENERS.push([
     chunkListPath,
     handleApply.bind(null, chunkListPath),
   ])
@@ -606,5 +606,3 @@ function registerChunkList(chunkList: ChunkList) {
     markChunkListAsRuntime(chunkListPath)
   }
 }
-
-globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS ??= []
