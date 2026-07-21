@@ -215,8 +215,10 @@ pub async fn get_browser_runtime_code(
         writedoc!(
             code,
             r#"
-                var CHUNK_UPDATE_LISTENERS = globalThis[{chunk_update_listeners_global}] ||
-                    (globalThis[{chunk_update_listeners_global}] = []);
+                globalThis[{chunk_update_listeners_global}] ||= [];
+                var CHUNK_UPDATE_LISTENERS = {{
+                    push: (registration) => globalThis[{chunk_update_listeners_global}].push(registration),
+                }};
             "#,
             chunk_update_listeners_global = StringifyJs(&chunk_update_listeners_global),
         )?;
