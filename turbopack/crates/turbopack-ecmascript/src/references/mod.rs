@@ -4,6 +4,7 @@ pub mod cjs;
 pub mod constant_condition;
 pub mod constant_value;
 pub mod dynamic_expression;
+pub mod dynamic_external_require;
 pub mod esm;
 pub mod exports;
 pub mod exports_info;
@@ -35,6 +36,7 @@ use bincode::{Decode, Encode};
 use bumpalo::boxed::Box as BumpBox;
 use constant_condition::{ConstantConditionCodeGen, ConstantConditionValue};
 use constant_value::ConstantValueCodeGen;
+use dynamic_external_require::DynamicExternalRequire;
 use either::Either;
 use indexmap::map::Entry;
 use num_traits::Zero;
@@ -461,6 +463,7 @@ struct AnalysisState<'a> {
     tree_shaking_mode: Option<TreeShakingMode>,
     import_externals: bool,
     ignore_dynamic_requests: bool,
+    runtime_external_require_map: Option<ResolvedVc<crate::RuntimeExternalRequireMap>>,
     url_rewrite_behavior: Option<UrlRewriteBehavior>,
     // Whether we should collect affecting sources from referenced files. Only usedful when
     // tracing.
@@ -856,6 +859,7 @@ async fn analyze_ecmascript_module_internal(
             tree_shaking_mode: options.tree_shaking_mode,
             import_externals: options.import_externals,
             ignore_dynamic_requests: options.ignore_dynamic_requests,
+            runtime_external_require_map: options.runtime_external_require_map,
             url_rewrite_behavior: options.url_rewrite_behavior,
             collect_affecting_sources: options.analyze_mode.is_tracing_assets(),
             tracing_only: !options.analyze_mode.is_code_gen(),
@@ -2117,6 +2121,13 @@ where
             if args.len() == 1 {
                 let pat = js_value_to_pattern(&args[0]);
                 if !pat.has_constant_parts() {
+                    if let Some(runtime_external_require_map) = state.runtime_external_require_map {
+                        analysis.add_code_gen(DynamicExternalRequire::new(
+                            ast_path.to_vec().into(),
+                            runtime_external_require_map,
+                        ));
+                        return Ok(());
+                    }
                     let (args, hints) = explain_args(args);
                     handler.span_warn_with_code(
                         span,

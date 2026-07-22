@@ -14,9 +14,9 @@ use serde::Deserialize;
 use tracing_subscriber::{Registry, layer::SubscriberExt, util::SubscriberInitExt};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
-    Completion, Effects, NonLocalValue, OperationVc, ReadRef, ResolvedVc, TurboTasks, Vc,
-    debug::ValueDebugFormat, fxindexmap, read_strongly_consistent_and_apply_effects, take_effects,
-    trace::TraceRawVcs,
+    Completion, Effects, FxIndexMap, NonLocalValue, OperationVc, ReadRef, ResolvedVc, TurboTasks,
+    Vc, debug::ValueDebugFormat, fxindexmap, read_strongly_consistent_and_apply_effects,
+    take_effects, trace::TraceRawVcs,
 };
 use turbo_tasks_backend::{BackendOptions, TurboTasksBackend, noop_backing_storage};
 use turbo_tasks_env::CommandLineProcessEnv;
@@ -49,7 +49,9 @@ use turbopack_core::{
     },
 };
 use turbopack_css::chunk::CssChunkType;
-use turbopack_ecmascript::{TreeShakingMode, chunk::EcmascriptChunkType};
+use turbopack_ecmascript::{
+    RuntimeExternalRequireMap, TreeShakingMode, chunk::EcmascriptChunkType,
+};
 use turbopack_ecmascript_runtime::RuntimeType;
 use turbopack_node::{
     child_process_backend,
@@ -276,6 +278,8 @@ struct TestOptions {
     minify: bool,
     #[serde(default)]
     production_chunking: bool,
+    #[serde(default)]
+    runtime_external_require_map: Vec<(RcStr, RcStr)>,
 }
 
 fn default_tree_shaking_mode() -> Option<TreeShakingMode> {
@@ -295,6 +299,7 @@ impl Default for TestOptions {
             scope_hoisting: default_true(),
             minify: false,
             production_chunking: false,
+            runtime_external_require_map: Vec::new(),
         }
     }
 }
@@ -445,6 +450,17 @@ async fn run_test_operation(prepared_test: ResolvedVc<PreparedTest>) -> Result<V
                 import_externals: true,
                 enable_exports_info_inlining: true,
                 infer_module_side_effects: true,
+                runtime_external_require_map: (!options.runtime_external_require_map.is_empty())
+                    .then(|| {
+                        RuntimeExternalRequireMap(
+                            options
+                                .runtime_external_require_map
+                                .iter()
+                                .cloned()
+                                .collect::<FxIndexMap<_, _>>(),
+                        )
+                        .resolved_cell()
+                    }),
                 ..Default::default()
             },
             environment: Some(env),

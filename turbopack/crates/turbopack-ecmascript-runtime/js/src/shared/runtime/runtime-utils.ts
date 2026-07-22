@@ -434,6 +434,29 @@ const runtimeRequire =
       }
 contextPrototype.t = runtimeRequire
 
+const RUNTIME_REQUIRE_SYMBOL = Symbol.for('@utoo/pack/runtime-require')
+
+function dynamicExternalRequire(
+  request: unknown,
+  externals: Record<string, string>
+): Exports {
+  if (typeof request !== 'string' || !hasOwnProperty.call(externals, request)) {
+    const e = new Error(
+      `Dynamic require "${String(request)}" is not declared as a CommonJS external`
+    )
+    ;(e as any).code = 'MODULE_NOT_FOUND'
+    throw e
+  }
+
+  const runtimeRequest = externals[request]
+  const runtimeRequireHook = (globalThis as any)[RUNTIME_REQUIRE_SYMBOL] as
+    | RuntimeRequire
+    | undefined
+
+  return (runtimeRequireHook ?? runtimeRequire)(runtimeRequest)
+}
+contextPrototype.d = dynamicExternalRequire
+
 function commonJsRequire(
   this: TurbopackBaseContext<Module>,
   id: ModuleId

@@ -91,6 +91,8 @@ pub const TURBOPACK_EXTERNAL_IMPORT: &TurbopackRuntimeFunctionShortcut = make_sh
 pub const TURBOPACK_REFRESH: &TurbopackRuntimeFunctionShortcut = make_shortcut!("k");
 pub const TURBOPACK_REQUIRE_STUB: &TurbopackRuntimeFunctionShortcut = make_shortcut!("z");
 pub const TURBOPACK_REQUIRE_REAL: &TurbopackRuntimeFunctionShortcut = make_shortcut!("t");
+pub const TURBOPACK_DYNAMIC_EXTERNAL_REQUIRE: &TurbopackRuntimeFunctionShortcut =
+    make_shortcut!("d");
 pub const TURBOPACK_GLOBAL: &TurbopackRuntimeFunctionShortcut = make_shortcut!("g");
 pub const TURBOPACK_CHUNK_RELATIVE_URL: &TurbopackRuntimeFunctionShortcut = make_shortcut!("h");
 pub const TURBOPACK_RUNTIME_ROOT: &TurbopackRuntimeFunctionShortcut = make_shortcut!("w");
@@ -100,7 +102,7 @@ pub const TURBOPACK_PUBLIC_PATH: &TurbopackRuntimeFunctionShortcut = make_shortc
 
 /// Adding an entry to this list will automatically ensure that `__turbopack_XXX__` can be called
 /// from user code (by inserting a replacement into free_var_references)
-pub const TURBOPACK_RUNTIME_FUNCTION_SHORTCUTS: [(&str, &TurbopackRuntimeFunctionShortcut); 28] = [
+pub const TURBOPACK_RUNTIME_FUNCTION_SHORTCUTS: [(&str, &TurbopackRuntimeFunctionShortcut); 29] = [
     ("__turbopack_require__", TURBOPACK_REQUIRE),
     ("__turbopack_module_context__", TURBOPACK_MODULE_CONTEXT),
     ("__turbopack_import__", TURBOPACK_IMPORT),
@@ -129,6 +131,10 @@ pub const TURBOPACK_RUNTIME_FUNCTION_SHORTCUTS: [(&str, &TurbopackRuntimeFunctio
     ("__turbopack_refresh__", TURBOPACK_REFRESH),
     ("__turbopack_require_stub__", TURBOPACK_REQUIRE_STUB),
     ("__turbopack_require_real__", TURBOPACK_REQUIRE_REAL),
+    (
+        "__turbopack_dynamic_external_require__",
+        TURBOPACK_DYNAMIC_EXTERNAL_REQUIRE,
+    ),
     (
         "__turbopack_clear_chunk_cache__",
         TURBOPACK_CLEAR_CHUNK_CACHE,

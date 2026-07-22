@@ -238,6 +238,9 @@ pub struct EcmascriptOptions {
     /// If false, they will reference the whole directory. If true, they won't
     /// reference anything and lead to an runtime error instead.
     pub ignore_dynamic_requests: bool,
+    /// Preserve fully dynamic CommonJS `require()` calls for runtime resolution,
+    /// restricted to the configured request-to-CommonJS-external mapping.
+    pub runtime_external_require_map: Option<ResolvedVc<RuntimeExternalRequireMap>>,
     /// If true, it reads a sourceMappingURL comment from the end of the file,
     /// reads and generates a source map.
     pub extract_source_map: bool,
@@ -260,6 +263,13 @@ pub struct EcmascriptOptions {
     /// Whether to infer side effect free modules via local analysis. Defaults to true.
     pub infer_module_side_effects: bool,
 }
+
+/// Exact request-to-runtime-request mapping used by runtime-external dynamic
+/// CommonJS requires.
+#[turbo_tasks::value(transparent)]
+pub struct RuntimeExternalRequireMap(
+    #[bincode(with = "turbo_bincode::indexmap")] pub FxIndexMap<RcStr, RcStr>,
+);
 
 #[turbo_tasks::value(task_input)]
 #[derive(Hash, Debug, Copy, Clone)]

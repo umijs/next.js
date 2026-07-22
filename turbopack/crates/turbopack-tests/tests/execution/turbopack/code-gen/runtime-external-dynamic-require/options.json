@@ -1,0 +1,6 @@
+{
+  "runtimeExternalRequireMap": [
+    ["node:path", "node:path"],
+    ["path-alias", "node:path"]
+  ]
+}

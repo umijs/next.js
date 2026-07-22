@@ -14,7 +14,7 @@ use turbopack_core::{
     environment::Environment, resolve::options::ImportMapping,
 };
 use turbopack_ecmascript::{
-    AnalyzeMode, TreeShakingMode, TypeofWindow,
+    AnalyzeMode, RuntimeExternalRequireMap, TreeShakingMode, TypeofWindow,
     references::esm::UrlRewriteBehavior,
     transform::{PresetEnvConfig, ReactCompilerCompilationMode, ReactCompilerTarget},
 };
@@ -266,6 +266,9 @@ pub struct EcmascriptOptionsContext {
     /// If false, they will reference the whole directory. If true, they won't
     /// reference anything and lead to an runtime error instead.
     pub ignore_dynamic_requests: bool,
+    /// Preserve fully dynamic CommonJS `require()` calls for runtime resolution,
+    /// restricted to an exact CommonJS external mapping.
+    pub runtime_external_require_map: Option<ResolvedVc<RuntimeExternalRequireMap>>,
     /// Specifies how Source Maps are handled.
     pub source_maps: SourceMapsType,
 

@@ -56,6 +56,10 @@ type GetChunkRelativeURL = (
 
 type CommonJsRequire = (moduleId: ModuleId) => Exports
 type RuntimeRequire = (request: string) => Exports
+type DynamicExternalRequire = (
+  request: unknown,
+  externals: Record<string, string>
+) => Exports
 type ModuleContextFactory = (map: ModuleContextMap) => ModuleContext
 type EsmImport = (
   moduleId: ModuleId,
@@ -135,6 +139,7 @@ interface TurbopackBaseContext<M> {
   e: Exports
   r: CommonJsRequire
   t: RuntimeRequire
+  d: DynamicExternalRequire
   f: ModuleContextFactory
   i: EsmImport
   A: InvokeAsyncLoader

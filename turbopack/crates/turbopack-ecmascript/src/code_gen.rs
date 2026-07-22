@@ -27,6 +27,7 @@ use crate::{
         constant_condition::ConstantConditionCodeGen,
         constant_value::ConstantValueCodeGen,
         dynamic_expression::DynamicExpression,
+        dynamic_external_require::DynamicExternalRequire,
         esm::{
             EsmBinding, EsmModuleItem, ImportMetaBinding, ImportMetaRef,
             dynamic::EsmAsyncAssetReferenceCodeGen, module_id::EsmModuleIdAssetReferenceCodeGen,
@@ -193,6 +194,7 @@ pub enum CodeGen {
     ConstantConditionCodeGen(ConstantConditionCodeGen),
     ConstantValueCodeGen(ConstantValueCodeGen),
     DynamicExpression(DynamicExpression),
+    DynamicExternalRequire(DynamicExternalRequire),
     EsmBinding(EsmBinding),
     EsmModuleItem(EsmModuleItem),
     ExportsInfoBinding(ExportsInfoBinding),
@@ -229,6 +231,7 @@ impl CodeGen {
             Self::ConstantConditionCodeGen(v) => v.code_generation(ctx).await,
             Self::ConstantValueCodeGen(v) => v.code_generation(ctx).await,
             Self::DynamicExpression(v) => v.code_generation(ctx).await,
+            Self::DynamicExternalRequire(v) => v.code_generation(ctx).await,
             Self::EsmBinding(v) => v.code_generation(ctx, scope_hoisting_context).await,
             Self::EsmModuleItem(v) => v.code_generation(ctx).await,
             Self::ExportsInfoBinding(v) => v.code_generation(ctx, module, exports).await,
