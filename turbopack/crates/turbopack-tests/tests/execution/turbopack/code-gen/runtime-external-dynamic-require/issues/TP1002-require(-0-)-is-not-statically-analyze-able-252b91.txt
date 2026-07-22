@@ -1,0 +1,16 @@
+warning - [analysis] /turbopack/crates/turbopack-tests/tests/execution/turbopack/code-gen/runtime-external-dynamic-require/input/index.js:10:9  TP1002 require(???*0*) is not statically analyze-able
+  
+       6 |   return require(request)
+       7 | }
+       8 | 
+       9 | function loadSpread(requests) {
+         +          v------------------v
+      10 +   return require(...requests)
+         +          ^------------------^
+      11 | }
+      12 | 
+      13 | it('loads an allowed runtime external', () => {
+      14 |   expect(load('node:path').basename('/tmp/example.txt')).toBe('example.txt')
+  
+  - *0* spread is not supported yet
+    ⚠️  This value might have side effects

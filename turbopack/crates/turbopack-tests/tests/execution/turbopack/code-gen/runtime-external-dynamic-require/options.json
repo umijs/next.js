@@ -1,6 +1,7 @@
 {
   "runtimeExternalRequireMap": [
     ["node:path", "node:path"],
-    ["path-alias", "node:path"]
+    ["path-alias", "node:path"],
+    ["__proto__", "node:path"]
   ]
 }

@@ -1576,6 +1576,9 @@ async fn handle_call<'a, G: Fn(BumpVec<'a, Effect<'a>>) + Send + Sync>(
     // Process all effects first so they happen exactly once.
     // If we end up modeling the behavior of the closures passed to any of these functions then we
     // will need to inline this into the appropriate spot just like Array.prototype.map support.
+    let has_spread_args = args
+        .iter()
+        .any(|effect_arg| matches!(effect_arg, EffectArg::Spread));
     let unlinked_args = args
         .into_iter()
         .map(|effect_arg| match effect_arg {
@@ -1619,6 +1622,7 @@ async fn handle_call<'a, G: Fn(BumpVec<'a, Effect<'a>>) + Send + Sync>(
                         wkf,
                         new,
                         &linked_args,
+                        has_spread_args,
                         handler,
                         span,
                         ignore_dynamic_requests,
@@ -1643,6 +1647,7 @@ async fn handle_call<'a, G: Fn(BumpVec<'a, Effect<'a>>) + Send + Sync>(
                 wkf,
                 new,
                 &linked_args,
+                has_spread_args,
                 handler,
                 span,
                 ignore_dynamic_requests,
@@ -1829,6 +1834,7 @@ async fn handle_well_known_function_call<'a, 'l, F, Fut>(
     func: WellKnownFunctionKind<'a>,
     new: bool,
     linked_args: &F,
+    has_spread_args: bool,
     handler: &Handler,
     span: Span,
     ignore_dynamic_requests: bool,
@@ -2118,7 +2124,7 @@ where
         }
         WellKnownFunctionKind::Require => {
             let args = linked_args().await?;
-            if args.len() == 1 {
+            if args.len() == 1 && !has_spread_args {
                 let pat = js_value_to_pattern(&args[0]);
                 if !pat.has_constant_parts() {
                     if let Some(runtime_external_require_map) = state.runtime_external_require_map {

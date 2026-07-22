@@ -2,8 +2,25 @@ function load(request) {
   return require(request)
 }
 
+function loadAgain(request) {
+  return require(request)
+}
+
+function loadSpread(requests) {
+  return require(...requests)
+}
+
 it('loads an allowed runtime external', () => {
   expect(load('node:path').basename('/tmp/example.txt')).toBe('example.txt')
+  expect(loadAgain('node:path').basename('/tmp/again.txt')).toBe('again.txt')
+})
+
+it('preserves spread require semantics', () => {
+  expect(loadSpread(['node:path']).basename('/tmp/spread.txt')).toBe('spread.txt')
+})
+
+it('loads an external whose request is __proto__', () => {
+  expect(load('__proto__').basename('/tmp/proto.txt')).toBe('proto.txt')
 })
 
 it('maps the request before invoking the runtime hook', () => {
