@@ -160,6 +160,27 @@ impl EcmascriptDevChunkListContent {
         // variable. Similarly, we register the chunk list with the
         // `{chunk_loading_global}_CHUNK_LISTS` global variable.
         let chunk_lists_global = format!("{}_CHUNK_LISTS", this.chunk_loading_global);
+        let dynamic_metadata = match this.source {
+            EcmascriptDevChunkListSource::Entry => String::new(),
+            EcmascriptDevChunkListSource::Dynamic => {
+                let version = self.version().id().owned().await?;
+                let chunk_versions: FxIndexMap<&str, RcStr> = this
+                    .chunks_contents
+                    .iter()
+                    .map(async |(path, content)| {
+                        Ok((path.as_str(), content.version().id().owned().await?))
+                    })
+                    .try_join()
+                    .await?
+                    .into_iter()
+                    .collect();
+                format!(
+                    ",\nchunkVersions: {},\nversion: {}",
+                    StringifyJs(&chunk_versions),
+                    StringifyJs(&version)
+                )
+            }
+        };
         writedoc!(
             code,
             // `||=` would be better but we need to be es2020 compatible
@@ -168,11 +189,12 @@ impl EcmascriptDevChunkListContent {
                 (globalThis[{chunk_lists_global}] || (globalThis[{chunk_lists_global}] = [])).push({{
                     script: {script_or_path},
                     chunks: {chunks},
-                    source: {source}
+                    source: {source}{dynamic_metadata}
                 }});
             "#,
             chunk_lists_global = StringifyJs(&chunk_lists_global),
             chunks = StringifyJs(&chunks),
+            dynamic_metadata = dynamic_metadata,
             source = StringifyJs(&this.source),
         )?;
 

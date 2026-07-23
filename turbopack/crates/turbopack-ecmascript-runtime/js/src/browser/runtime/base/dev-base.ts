@@ -66,6 +66,14 @@ interface DevRuntimeBackend {
   restart: () => void
 }
 
+type DevChunkList =
+  | (Omit<ChunkList, 'source'> & { source: 'entry' })
+  | (Omit<ChunkList, 'source'> & {
+      source: 'dynamic'
+      chunkVersions: Record<ChunkPath, string>
+      version: string
+    })
+
 /**
  * Map from module ID to the chunks that contain this module.
  *
@@ -92,6 +100,10 @@ const chunkListChunksMap: Map<ChunkListPath, Set<ChunkPath>> = new Map()
  * Map from a chunk path to the chunk lists it belongs to.
  */
 const chunkChunkListsMap: Map<ChunkPath, Set<ChunkListPath>> = new Map()
+/** Dynamic lists use a stricter, reload-on-ambiguity update policy. */
+const dynamicChunkLists: Set<ChunkListPath> = new Set()
+/** Dynamic manifests which have not finished their subscribe/load/revalidate handshake. */
+const loadingDynamicChunkLists: Set<ChunkListPath> = new Set()
 
 /**
  * Gets or instantiates a runtime module.
@@ -408,6 +420,31 @@ function handleApply(chunkListPath: ChunkListPath, update: ServerMessage) {
   switch (update.type) {
     case 'partial': {
       // This indicates that the update is can be applied to the current state of the application.
+      if (dynamicChunkLists.has(chunkListPath)) {
+        if (loadingDynamicChunkLists.has(chunkListPath)) {
+          throw new Error(
+            `Dynamic chunk list ${chunkListPath} changed while it was loading.`
+          )
+        }
+        if (
+          update.instruction.type === 'ChunkListUpdate' &&
+          update.instruction.chunks != null
+        ) {
+          throw new Error(
+            `Dynamic chunk list ${chunkListPath} changed structure.`
+          )
+        }
+        const hasSharedChunk = [
+          ...(chunkListChunksMap.get(chunkListPath) ?? []),
+        ].some(
+          (chunkPath) => (chunkChunkListsMap.get(chunkPath)?.size ?? 0) > 1
+        )
+        if (hasSharedChunk) {
+          throw new Error(
+            `Dynamic chunk list ${chunkListPath} shares chunks with another active list.`
+          )
+        }
+      }
       applyUpdate(update.instruction)
       break
     }
@@ -423,7 +460,10 @@ function handleApply(chunkListPath: ChunkListPath, update: ServerMessage) {
       // or the page itself was deleted.
       // If it is a dynamic import, we simply discard all modules that the chunk has exclusive access to.
       // If it is a runtime chunk list, we restart the application.
-      if (runtimeChunkLists.has(chunkListPath)) {
+      if (
+        runtimeChunkLists.has(chunkListPath) ||
+        dynamicChunkLists.has(chunkListPath)
+      ) {
         DEV_BACKEND.restart()
       } else {
         disposeChunkList(chunkListPath)
@@ -553,8 +593,26 @@ function markChunkListAsRuntime(chunkListPath: ChunkListPath) {
   runtimeChunkLists.add(chunkListPath)
 }
 
+function getDevChunkFromRegistration(
+  chunk: ChunkRegistrationChunk
+): ChunkPath | CurrentScript {
+  if (typeof chunk === 'string') {
+    if (typeof document !== 'undefined') {
+      const src = document.currentScript?.getAttribute('src')
+      if (
+        src &&
+        /[?&]hmr=/.test(src) &&
+        getPathFromScript({ src } as ChunkScript) === (chunk as ChunkPath)
+      ) {
+        return { src } as CurrentScript
+      }
+    }
+  }
+  return getChunkFromRegistration(chunk)
+}
+
 function registerChunk(registration: ChunkRegistration) {
-  const chunk = getChunkFromRegistration(registration[0]) as
+  const chunk = getDevChunkFromRegistration(registration[0]) as
     | ChunkPath
     | ChunkScript
   let runtimeParams: RuntimeParams | undefined
@@ -574,20 +632,37 @@ function registerChunk(registration: ChunkRegistration) {
   return BACKEND.registerChunk(chunk, runtimeParams)
 }
 
+function getVersionedChunkUrl(
+  chunkPath: ChunkPath,
+  versionToken: string
+): ChunkUrl {
+  const chunkUrl = getChunkRelativeUrl(chunkPath)
+  const separator = chunkUrl.includes('?') ? '&' : '?'
+  return `${chunkUrl}${separator}hmr=${encodeURIComponent(
+    versionToken
+  )}` as ChunkUrl
+}
+
+function loadVersionedInitialChunk(
+  chunkListPath: ChunkPath,
+  chunkData: ChunkData,
+  versionToken: string
+) {
+  return loadChunkByUrlInternal(
+    SourceType.Runtime,
+    chunkListPath,
+    getVersionedChunkUrl(getChunkPath(chunkData), versionToken)
+  )
+}
+
 /**
  * Subscribes to chunk list updates from the update server and applies them.
  */
-function registerChunkList(chunkList: ChunkList) {
-  const chunkListScript = getChunkFromRegistration(chunkList.script) as
+function registerChunkList(chunkList: DevChunkList) {
+  const chunkListScript = getDevChunkFromRegistration(chunkList.script) as
     | ChunkListPath
     | ChunkListScript
   const chunkListPath = getPathFromScript(chunkListScript)
-  // The "chunk" is also registered to finish the loading in the backend
-  BACKEND.registerChunk(chunkListPath as string as ChunkPath)
-  CHUNK_UPDATE_LISTENERS.push([
-    chunkListPath,
-    handleApply.bind(null, chunkListPath),
-  ])
 
   // Adding chunks to chunk lists and vice versa.
   const chunkPaths = new Set(chunkList.chunks.map(getChunkPath))
@@ -603,6 +678,79 @@ function registerChunkList(chunkList: ChunkList) {
   }
 
   if (chunkList.source === 'entry') {
+    // Entry lists keep the legacy loading and update behavior.
+    BACKEND.registerChunk(chunkListPath as string as ChunkPath)
+    CHUNK_UPDATE_LISTENERS.push([
+      chunkListPath,
+      handleApply.bind(null, chunkListPath),
+    ])
     markChunkListAsRuntime(chunkListPath)
+    return
   }
+
+  dynamicChunkLists.add(chunkListPath)
+
+  if (typeof document === 'undefined') {
+    // Workers do not have the browser HMR transport. Load the manifest members
+    // directly so the dynamic import cannot wait for a subscription forever.
+    void Promise.all(
+      chunkList.chunks.map((chunkData) =>
+        loadInitialChunk(chunkListPath as string as ChunkPath, chunkData)
+      )
+    ).then(
+      () => BACKEND.registerChunk(chunkListPath as string as ChunkPath),
+      () => DEV_BACKEND.restart()
+    )
+    return
+  }
+
+  loadingDynamicChunkLists.add(chunkListPath)
+  let resolveSubscribed!: () => void
+  let revalidateSubscription!: () => Promise<void>
+  const subscribed = new Promise<void>((resolve) => {
+    resolveSubscribed = resolve
+  })
+
+  CHUNK_UPDATE_LISTENERS.push([
+    chunkListPath,
+    handleApply.bind(null, chunkListPath),
+    {
+      conservative: true,
+      expectedVersion: chunkList.version,
+      onSubscribed: (revalidate) => {
+        revalidateSubscription = revalidate
+        resolveSubscribed()
+      },
+    },
+  ])
+
+  void (async () => {
+    try {
+      await subscribed
+      await Promise.all(
+        chunkList.chunks.map((chunkData) => {
+          const chunkPath = getChunkPath(chunkData)
+          const chunkVersion = chunkList.chunkVersions[chunkPath]
+          if (chunkVersion === undefined) {
+            throw new Error(
+              `Missing version for dynamic member chunk ${chunkPath}`
+            )
+          }
+          return loadVersionedInitialChunk(
+            chunkListPath as string as ChunkPath,
+            chunkData,
+            chunkVersion
+          )
+        })
+      )
+      // Member URLs are served from the live output directory. Verify that
+      // the manifest did not change while those HTTP responses were loading.
+      await revalidateSubscription()
+      loadingDynamicChunkLists.delete(chunkListPath)
+      BACKEND.registerChunk(chunkListPath as string as ChunkPath)
+    } catch {
+      loadingDynamicChunkLists.delete(chunkListPath)
+      DEV_BACKEND.restart()
+    }
+  })()
 }

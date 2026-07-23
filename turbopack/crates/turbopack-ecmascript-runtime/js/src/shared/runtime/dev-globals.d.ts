@@ -6,9 +6,18 @@
  */
 
 type UpdateCallback = (update: ServerMessage) => void
+type ChunkUpdateRegistration = [
+  chunkListPath: ChunkListPath,
+  callback: UpdateCallback,
+  options?: {
+    conservative?: boolean
+    onSubscribed?: (revalidate: () => Promise<void>) => void
+    expectedVersion?: string
+  },
+]
 
 type ChunkUpdateProvider = {
-  push: (registration: [ChunkListPath, UpdateCallback]) => void
+  push: (registration: ChunkUpdateRegistration) => void
 }
 
 declare var CHUNK_UPDATE_LISTENERS: ChunkUpdateProvider

@@ -62,27 +62,52 @@ export function connect({
 
   const global = globalThis as unknown as Record<
     string,
-    ChunkUpdateProvider | [ChunkListPath, UpdateCallback][] | undefined
+    ChunkUpdateProvider | ChunkUpdateRegistration[] | undefined
   >
   const queued = global[chunkUpdateListenersGlobal]
   if (queued != null && !Array.isArray(queued)) {
     throw new Error('A separate HMR handler was already registered')
   }
   global[chunkUpdateListenersGlobal] = {
-    push: ([chunkPath, callback]: [ChunkListPath, UpdateCallback]) => {
-      subscribeToChunkUpdate(chunkPath, sendMessage, callback)
+    push: ([chunkPath, callback, options]: ChunkUpdateRegistration) => {
+      subscribeToChunkUpdate(
+        chunkPath,
+        sendMessage,
+        callback,
+        options?.conservative,
+        options?.onSubscribed,
+        options?.expectedVersion
+      )
     },
   }
 
   if (Array.isArray(queued)) {
-    for (const [chunkPath, callback] of queued) {
-      subscribeToChunkUpdate(chunkPath, sendMessage, callback)
+    for (const [chunkPath, callback, options] of queued) {
+      subscribeToChunkUpdate(
+        chunkPath,
+        sendMessage,
+        callback,
+        options?.conservative,
+        options?.onSubscribed,
+        options?.expectedVersion
+      )
     }
   }
 }
 
 type UpdateCallbackSet = {
   callbacks: Set<UpdateCallback>
+  conservative: boolean
+  onSubscribedCallbacks: Set<(revalidate: () => Promise<void>) => void>
+  subscribed: boolean
+  expectedVersion?: string
+  validationToken?: string
+  validation?: {
+    promise: Promise<void>
+    resolve: () => void
+    reject: (error: Error) => void
+  }
+  revalidate: () => Promise<void>
   unsubscribe: () => void
 }
 
@@ -101,13 +126,21 @@ function resourceKey(resource: ResourceIdentifier): ResourceKey {
   })
 }
 
+function createValidationToken() {
+  return `${Date.now()}:${Math.random()}`
+}
+
 function subscribeToUpdates(
   sendMessage: SendMessage,
-  resource: ResourceIdentifier
+  resource: ResourceIdentifier,
+  expectedVersion?: string,
+  validation?: string
 ): () => void {
   sendJSON(sendMessage, {
     type: 'turbopack-subscribe',
     ...resource,
+    version: expectedVersion,
+    validation,
   })
 
   return () => {
@@ -119,8 +152,17 @@ function subscribeToUpdates(
 }
 
 function handleSocketConnected(sendMessage: SendMessage) {
-  for (const key of updateCallbackSets.keys()) {
-    subscribeToUpdates(sendMessage, JSON.parse(key))
+  for (const [key, callbackSet] of updateCallbackSets) {
+    callbackSet.subscribed = false
+    if (callbackSet.validationToken !== undefined) {
+      callbackSet.validationToken = createValidationToken()
+    }
+    callbackSet.unsubscribe = subscribeToUpdates(
+      sendMessage,
+      JSON.parse(key),
+      callbackSet.expectedVersion,
+      callbackSet.validationToken
+    )
   }
 }
 
@@ -144,11 +186,23 @@ function aggregateUpdates(msg: PartialServerMessage) {
 
 function applyAggregatedUpdates() {
   if (chunkListsWithPendingUpdates.size === 0) return
+  const updates = [...chunkListsWithPendingUpdates.values()]
+  chunkListsWithPendingUpdates.clear()
+  if (
+    updates.length > 1 &&
+    updates.some(
+      (update) =>
+        updateCallbackSets.get(resourceKey(update.resource))?.conservative
+    )
+  ) {
+    throw new Error(
+      'Multiple dynamic HMR lists changed in one build; reloading conservatively.'
+    )
+  }
   hooks.beforeRefresh()
-  for (const msg of chunkListsWithPendingUpdates.values()) {
+  for (const msg of updates) {
     triggerUpdate(msg)
   }
-  chunkListsWithPendingUpdates.clear()
   finalizeUpdate()
 }
 
@@ -515,9 +569,26 @@ export function setHooks(newHooks: typeof hooks) {
 }
 
 function handleSocketMessage(msg: ServerMessage) {
+  const callbackSet = updateCallbackSets.get(resourceKey(msg.resource))
+  if (!callbackSet || callbackSet.validationToken !== msg.validation) {
+    // Frames already queued by an old subscription can arrive after an
+    // unsubscribe. Only the active validation generation may update state.
+    return
+  }
+
   sortIssues(msg.issues)
 
-  handleIssues(msg)
+  const hasCriticalIssues = handleIssues(msg)
+  if (!hasCriticalIssues && msg.type === 'issues') {
+    markUpdateSubscriptionReady(msg.resource)
+  } else if (msg.type !== 'issues') {
+    rejectUpdateSubscriptionValidation(
+      msg.resource,
+      new Error(
+        `Received ${msg.type} before the HMR subscription baseline was validated.`
+      )
+    )
+  }
 
   switch (msg.type) {
     case 'issues':
@@ -537,6 +608,30 @@ function handleSocketMessage(msg: ServerMessage) {
   }
 }
 
+function markUpdateSubscriptionReady(resource: ResourceIdentifier) {
+  const callbackSet = updateCallbackSets.get(resourceKey(resource))
+  if (!callbackSet || callbackSet.subscribed) return
+
+  callbackSet.subscribed = true
+  callbackSet.validation?.resolve()
+  callbackSet.validation = undefined
+  for (const callback of callbackSet.onSubscribedCallbacks) {
+    callback(callbackSet.revalidate)
+  }
+  callbackSet.onSubscribedCallbacks.clear()
+}
+
+function rejectUpdateSubscriptionValidation(
+  resource: ResourceIdentifier,
+  error: Error
+) {
+  const callbackSet = updateCallbackSets.get(resourceKey(resource))
+  if (!callbackSet || callbackSet.subscribed) return
+
+  callbackSet.validation?.reject(error)
+  callbackSet.validation = undefined
+}
+
 function finalizeUpdate() {
   hooks.refresh()
   hooks.buildOk()
@@ -553,42 +648,111 @@ function finalizeUpdate() {
 function subscribeToChunkUpdate(
   chunkListPath: ChunkListPath,
   sendMessage: SendMessage,
-  callback: UpdateCallback
+  callback: UpdateCallback,
+  conservative?: boolean,
+  onSubscribed?: (revalidate: () => Promise<void>) => void,
+  expectedVersion?: string
 ): () => void {
   return subscribeToUpdate(
     {
       path: chunkListPath,
     },
     sendMessage,
-    callback
+    callback,
+    conservative,
+    onSubscribed,
+    expectedVersion
   )
 }
 
 export function subscribeToUpdate(
   resource: ResourceIdentifier,
   sendMessage: SendMessage,
-  callback: UpdateCallback
+  callback: UpdateCallback,
+  conservative?: boolean,
+  onSubscribed?: (revalidate: () => Promise<void>) => void,
+  expectedVersion?: string
 ) {
   const key = resourceKey(resource)
   let callbackSet: UpdateCallbackSet
   const existingCallbackSet = updateCallbackSets.get(key)
   if (!existingCallbackSet) {
+    let callbackSetRef!: UpdateCallbackSet
+    const revalidate = () => {
+      if (callbackSetRef.validation) return callbackSetRef.validation.promise
+      if (updateCallbackSets.get(key) !== callbackSetRef) {
+        return Promise.reject(
+          new Error(
+            `Cannot validate an inactive HMR subscription for ${resource.path}.`
+          )
+        )
+      }
+
+      callbackSetRef.unsubscribe()
+      callbackSetRef.subscribed = false
+      callbackSetRef.validationToken = createValidationToken()
+      let resolve!: () => void
+      let reject!: (error: Error) => void
+      const promise = new Promise<void>((innerResolve, innerReject) => {
+        resolve = innerResolve
+        reject = innerReject
+      })
+      callbackSetRef.validation = { promise, resolve, reject }
+      callbackSetRef.unsubscribe = subscribeToUpdates(
+        sendMessage,
+        resource,
+        expectedVersion,
+        callbackSetRef.validationToken
+      )
+      return promise
+    }
+    const validationToken = onSubscribed ? createValidationToken() : undefined
     callbackSet = {
       callbacks: new Set([callback]),
-      unsubscribe: subscribeToUpdates(sendMessage, resource),
+      conservative: Boolean(conservative),
+      onSubscribedCallbacks: new Set(onSubscribed ? [onSubscribed] : []),
+      subscribed: false,
+      expectedVersion,
+      validationToken,
+      revalidate,
+      unsubscribe: subscribeToUpdates(
+        sendMessage,
+        resource,
+        expectedVersion,
+        validationToken
+      ),
     }
+    callbackSetRef = callbackSet
     updateCallbackSets.set(key, callbackSet)
   } else {
+    if (existingCallbackSet.expectedVersion !== expectedVersion) {
+      location.reload()
+      return () => {}
+    }
     existingCallbackSet.callbacks.add(callback)
+    existingCallbackSet.conservative ||= Boolean(conservative)
+    if (onSubscribed) {
+      if (existingCallbackSet.subscribed) {
+        onSubscribed(existingCallbackSet.revalidate)
+      } else {
+        existingCallbackSet.onSubscribedCallbacks.add(onSubscribed)
+      }
+    }
     callbackSet = existingCallbackSet
   }
 
   return () => {
     callbackSet.callbacks.delete(callback)
+    if (onSubscribed) callbackSet.onSubscribedCallbacks.delete(onSubscribed)
 
     if (callbackSet.callbacks.size === 0) {
       callbackSet.unsubscribe()
       updateCallbackSets.delete(key)
+      callbackSet.validationToken = undefined
+      callbackSet.validation?.reject(
+        new Error(`HMR subscription for ${resource.path} was removed.`)
+      )
+      callbackSet.validation = undefined
     }
   }
 }

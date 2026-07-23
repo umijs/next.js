@@ -15,6 +15,7 @@ type ModuleFactoryString = string
 type ServerMessage = {
   resource: ResourceIdentifier
   issues: Issue[]
+  validation?: string
 } & (
   | {
       type: 'restart'
@@ -98,6 +99,8 @@ type ResourceIdentifier = {
 
 type ClientMessageSubscribe = {
   type: 'turbopack-subscribe'
+  version?: string
+  validation?: string
 } & ResourceIdentifier
 
 type ClientMessageUnsubscribe = {
