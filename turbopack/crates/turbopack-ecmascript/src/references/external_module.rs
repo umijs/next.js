@@ -329,6 +329,19 @@ impl CachedExternalModule {
             writeln!(code, "    for (var key in mod) ns[key] = mod[key];")?;
             writeln!(code, "  }}")?;
             writeln!(code, "  ns.default = mod;")?;
+            writeln!(
+                code,
+                "  Object.defineProperty(ns, '__esModule', {{ value: true }});"
+            )?;
+            writeln!(
+                code,
+                "  if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {{"
+            )?;
+            writeln!(
+                code,
+                "    Object.defineProperty(ns, Symbol.toStringTag, {{ value: 'Module' }});"
+            )?;
+            writeln!(code, "  }}")?;
             writeln!(code, "  {TURBOPACK_EXPORT_NAMESPACE}(ns);")?;
             writeln!(code, "}}")?;
         } else {
