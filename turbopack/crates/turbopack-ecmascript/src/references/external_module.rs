@@ -310,25 +310,32 @@ impl CachedExternalModule {
 
         if self.external_type == CachedExternalType::CommonJs {
             writeln!(code, "module.exports = mod;")?;
-        } else if self.external_type == CachedExternalType::EcmaScriptViaImport
-            || self.external_type == CachedExternalType::EcmaScriptViaRequire
-        {
-            writeln!(code, "{TURBOPACK_EXPORT_NAMESPACE}(mod);")?;
         } else if matches!(
             self.external_type,
-            CachedExternalType::Promise | CachedExternalType::Script
+            CachedExternalType::EcmaScriptViaImport
+                | CachedExternalType::EcmaScriptViaRequire
+                | CachedExternalType::Promise
+                | CachedExternalType::Script
         ) {
             writeln!(code, "if (mod && mod.__esModule) {{")?;
             writeln!(code, "  {TURBOPACK_EXPORT_NAMESPACE}(mod);")?;
             writeln!(code, "}} else {{")?;
             writeln!(code, "  var ns = Object.create(null);")?;
+            // Native ESM namespace objects are non-extensible and usually don't expose the
+            // non-standard `__esModule` flag. Clone them before adding Webpack-compatible
+            // metadata, but preserve their existing default export.
+            writeln!(
+                code,
+                "  var isEsmNamespace = mod && typeof Symbol !== 'undefined' && \
+                 Symbol.toStringTag && mod[Symbol.toStringTag] === 'Module';"
+            )?;
             writeln!(
                 code,
                 "  if (mod && (typeof mod === 'object' || typeof mod === 'function')) {{"
             )?;
             writeln!(code, "    for (var key in mod) ns[key] = mod[key];")?;
             writeln!(code, "  }}")?;
-            writeln!(code, "  ns.default = mod;")?;
+            writeln!(code, "  if (!isEsmNamespace) ns.default = mod;")?;
             writeln!(
                 code,
                 "  Object.defineProperty(ns, '__esModule', {{ value: true }});"
