@@ -322,8 +322,9 @@ impl CachedExternalModule {
             writeln!(code, "}} else {{")?;
             writeln!(code, "  var ns = Object.create(null);")?;
             // Native ESM namespace objects are non-extensible and usually don't expose the
-            // non-standard `__esModule` flag. Clone them before adding Webpack-compatible
-            // metadata, but preserve their existing default export.
+            // non-standard `__esModule` flag. Forward their exports through a new namespace
+            // before adding Webpack-compatible metadata, preserving live bindings and the
+            // existing default export.
             writeln!(
                 code,
                 "  var isEsmNamespace = mod && typeof Symbol !== 'undefined' && \
@@ -333,9 +334,27 @@ impl CachedExternalModule {
                 code,
                 "  if (mod && (typeof mod === 'object' || typeof mod === 'function')) {{"
             )?;
-            writeln!(code, "    for (var key in mod) ns[key] = mod[key];")?;
+            writeln!(code, "    for (var key in mod) {{")?;
+            writeln!(
+                code,
+                "      if (key === '__esModule' || (!isEsmNamespace && key === 'default')) \
+                 continue;"
+            )?;
+            writeln!(code, "      (function(key) {{")?;
+            writeln!(
+                code,
+                "        Object.defineProperty(ns, key, {{ enumerable: true, get: function() {{ \
+                 return mod[key]; }} }});"
+            )?;
+            writeln!(code, "      }})(key);")?;
+            writeln!(code, "    }}")?;
             writeln!(code, "  }}")?;
-            writeln!(code, "  if (!isEsmNamespace) ns.default = mod;")?;
+            writeln!(code, "  if (!isEsmNamespace) {{")?;
+            writeln!(
+                code,
+                "    Object.defineProperty(ns, 'default', {{ enumerable: true, value: mod }});"
+            )?;
+            writeln!(code, "  }}")?;
             writeln!(
                 code,
                 "  Object.defineProperty(ns, '__esModule', {{ value: true }});"
