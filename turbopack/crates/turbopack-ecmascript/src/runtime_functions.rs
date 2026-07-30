@@ -88,6 +88,7 @@ pub const TURBOPACK_RESOLVE_MODULE_ID_PATH: &TurbopackRuntimeFunctionShortcut = 
 pub const TURBOPACK_ASYNC_MODULE: &TurbopackRuntimeFunctionShortcut = make_shortcut!("a");
 pub const TURBOPACK_EXTERNAL_REQUIRE: &TurbopackRuntimeFunctionShortcut = make_shortcut!("x");
 pub const TURBOPACK_EXTERNAL_IMPORT: &TurbopackRuntimeFunctionShortcut = make_shortcut!("y");
+pub const TURBOPACK_EXTERNAL_NAMESPACE: &TurbopackRuntimeFunctionShortcut = make_shortcut!("N");
 pub const TURBOPACK_REFRESH: &TurbopackRuntimeFunctionShortcut = make_shortcut!("k");
 pub const TURBOPACK_REQUIRE_STUB: &TurbopackRuntimeFunctionShortcut = make_shortcut!("z");
 pub const TURBOPACK_REQUIRE_REAL: &TurbopackRuntimeFunctionShortcut = make_shortcut!("t");

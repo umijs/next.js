@@ -114,6 +114,7 @@ type ExternalRequire = (
 type ExternalImport = (
   id: DependencySpecifier
 ) => Promise<Exports | EsmNamespaceObject>
+type ExternalNamespace = (value: any) => any
 
 interface Module {
   exports: Function | Exports | Promise<Exports> | AsyncModulePromise
@@ -158,6 +159,7 @@ interface TurbopackBaseContext<M> {
   X: AssetSuffix
   x: ExternalRequire
   y: ExternalImport
+  N: ExternalNamespace
   z: CommonJsRequire
   g: typeof globalThis
   p: GetPublicPath

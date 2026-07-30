@@ -36,7 +36,8 @@ use crate::{
     references::async_module::{AsyncModule, OptionAsyncModule},
     runtime_functions::{
         TURBOPACK_ASYNC_MODULE, TURBOPACK_EXPORT_NAMESPACE, TURBOPACK_EXPORT_VALUE,
-        TURBOPACK_EXTERNAL_IMPORT, TURBOPACK_EXTERNAL_REQUIRE, TURBOPACK_LOAD_SCRIPT,
+        TURBOPACK_EXTERNAL_IMPORT, TURBOPACK_EXTERNAL_NAMESPACE, TURBOPACK_EXTERNAL_REQUIRE,
+        TURBOPACK_LOAD_SCRIPT,
     },
     utils::StringifyJs,
 };
@@ -317,59 +318,10 @@ impl CachedExternalModule {
                 | CachedExternalType::Promise
                 | CachedExternalType::Script
         ) {
-            writeln!(code, "if (mod && mod.__esModule) {{")?;
-            writeln!(code, "  {TURBOPACK_EXPORT_NAMESPACE}(mod);")?;
-            writeln!(code, "}} else {{")?;
-            writeln!(code, "  var ns = Object.create(null);")?;
-            // Native ESM namespace objects are non-extensible and usually don't expose the
-            // non-standard `__esModule` flag. Forward their exports through a new namespace
-            // before adding Webpack-compatible metadata, preserving live bindings and the
-            // existing default export.
             writeln!(
                 code,
-                "  var isEsmNamespace = mod && typeof Symbol !== 'undefined' && \
-                 Symbol.toStringTag && mod[Symbol.toStringTag] === 'Module';"
+                "{TURBOPACK_EXPORT_NAMESPACE}({TURBOPACK_EXTERNAL_NAMESPACE}(mod));"
             )?;
-            writeln!(
-                code,
-                "  if (mod && (typeof mod === 'object' || typeof mod === 'function')) {{"
-            )?;
-            writeln!(code, "    for (var key in mod) {{")?;
-            writeln!(
-                code,
-                "      if (key === '__esModule' || (!isEsmNamespace && key === 'default')) \
-                 continue;"
-            )?;
-            writeln!(code, "      (function(key) {{")?;
-            writeln!(
-                code,
-                "        Object.defineProperty(ns, key, {{ enumerable: true, get: function() {{ \
-                 return mod[key]; }} }});"
-            )?;
-            writeln!(code, "      }})(key);")?;
-            writeln!(code, "    }}")?;
-            writeln!(code, "  }}")?;
-            writeln!(code, "  if (!isEsmNamespace) {{")?;
-            writeln!(
-                code,
-                "    Object.defineProperty(ns, 'default', {{ enumerable: true, value: mod }});"
-            )?;
-            writeln!(code, "  }}")?;
-            writeln!(
-                code,
-                "  Object.defineProperty(ns, '__esModule', {{ value: true }});"
-            )?;
-            writeln!(
-                code,
-                "  if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {{"
-            )?;
-            writeln!(
-                code,
-                "    Object.defineProperty(ns, Symbol.toStringTag, {{ value: 'Module' }});"
-            )?;
-            writeln!(code, "  }}")?;
-            writeln!(code, "  {TURBOPACK_EXPORT_NAMESPACE}(ns);")?;
-            writeln!(code, "}}")?;
         } else {
             writeln!(code, "{TURBOPACK_EXPORT_VALUE}(mod);")?;
         }
