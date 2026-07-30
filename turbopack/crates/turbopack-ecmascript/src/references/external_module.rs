@@ -314,21 +314,23 @@ impl CachedExternalModule {
             || self.external_type == CachedExternalType::EcmaScriptViaRequire
         {
             writeln!(code, "{TURBOPACK_EXPORT_NAMESPACE}(mod);")?;
-        } else if self.external_type == CachedExternalType::Promise {
-            writeln!(code, "var ns = Object.create(null);")?;
+        } else if matches!(
+            self.external_type,
+            CachedExternalType::Promise | CachedExternalType::Script
+        ) {
+            writeln!(code, "if (mod && mod.__esModule) {{")?;
+            writeln!(code, "  {TURBOPACK_EXPORT_NAMESPACE}(mod);")?;
+            writeln!(code, "}} else {{")?;
+            writeln!(code, "  var ns = Object.create(null);")?;
             writeln!(
                 code,
-                "if (mod && (typeof mod === 'object' || typeof mod === 'function')) {{"
+                "  if (mod && (typeof mod === 'object' || typeof mod === 'function')) {{"
             )?;
-            writeln!(code, "  for (var key in mod) ns[key] = mod[key];")?;
+            writeln!(code, "    for (var key in mod) ns[key] = mod[key];")?;
+            writeln!(code, "  }}")?;
+            writeln!(code, "  ns.default = mod;")?;
+            writeln!(code, "  {TURBOPACK_EXPORT_NAMESPACE}(ns);")?;
             writeln!(code, "}}")?;
-            writeln!(code, "ns.default = mod;")?;
-            writeln!(code, "{TURBOPACK_EXPORT_NAMESPACE}(ns);")?;
-        } else if self.external_type == CachedExternalType::Script {
-            writeln!(code, "var ns = Object.create(null);")?;
-            writeln!(code, "for (var key in mod) ns[key] = mod[key];")?;
-            writeln!(code, "ns.default = mod;")?;
-            writeln!(code, "{TURBOPACK_EXPORT_NAMESPACE}(ns);")?;
         } else {
             writeln!(code, "{TURBOPACK_EXPORT_VALUE}(mod);")?;
         }
