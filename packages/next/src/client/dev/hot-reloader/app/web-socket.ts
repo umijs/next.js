@@ -188,7 +188,7 @@ export function createProcessTurbopackMessage(
   import(
     // @ts-expect-error requires "moduleResolution": "node16" in tsconfig.json and not .ts extension
     '@vercel/turbopack-ecmascript-runtime/browser/dev/hmr-client/hmr-client.ts'
-  ).then(({ connect }) => {
+  ).then(({ connect, TURBOPACK_CHUNK_UPDATE_LISTENERS_GLOBAL }) => {
     connect({
       addMessageListener(cb: (msg: TurbopackMessageSentToBrowser) => void) {
         callback = cb
@@ -201,6 +201,7 @@ export function createProcessTurbopackMessage(
       },
       sendMessage,
       onUpdateError: (err: unknown) => performFullReload(err, sendMessage),
+      chunkUpdateListenersGlobal: TURBOPACK_CHUNK_UPDATE_LISTENERS_GLOBAL,
     })
   })
 

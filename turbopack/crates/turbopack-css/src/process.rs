@@ -14,7 +14,6 @@ use lightningcss::{
     traits::ToCss,
     values::url::Url,
     visit_types,
-    visitor::Visit,
 };
 use rustc_hash::FxHashMap;
 use smallvec::smallvec;
@@ -369,6 +368,7 @@ pub async fn parse_css(
     ty: CssModuleType,
     environment: Option<ResolvedVc<Environment>>,
     feature_flags: LightningCssFeatureFlags,
+    css_modules_pattern: Option<RcStr>,
 ) -> Result<Vc<ParseCssResult>> {
     let span = tracing::info_span!(
         "parse css",
@@ -394,6 +394,7 @@ pub async fn parse_css(
                             ty,
                             environment,
                             feature_flags,
+                            css_modules_pattern.clone(),
                         )
                         .await?
                     }
@@ -436,24 +437,22 @@ fn source_pos_for_loc(loc: &lightningcss::error::ErrorLocation, code_had_bom: bo
 fn parse_css_stylesheet<'a>(
     code: &'a str,
     config: ParserOptions<'a>,
-    ty: CssModuleType,
-    source: ResolvedVc<Box<dyn Source>>,
+    _ty: CssModuleType,
+    _source: ResolvedVc<Box<dyn Source>>,
 ) -> Result<StyleSheet<'a>, lightningcss::error::Error<lightningcss::error::ParserError<'a>>> {
     // Lightning CSS tokenizes a leading byte-order mark as content instead of
     // skipping it, which misaligns the parser and rejects the first token.
     let code = strip_bom(code);
-    let mut ss = StyleSheet::parse(code, config)?;
+    // if matches!(ty, CssModuleType::Module) {
+    //     let mut validator = CssValidator { errors: Vec::new() };
+    //     ss.visit_mut(&mut validator).unwrap();
 
-    if matches!(ty, CssModuleType::Module) {
-        let mut validator = CssValidator { errors: Vec::new() };
-        ss.visit(&mut validator).unwrap();
-
-        for err in validator.errors {
-            err.report(source);
-        }
-    }
-
-    Ok(ss)
+    //     // TODO: remove pure selector
+    //     // for err in validator.errors {
+    //     //     err.report(source);
+    //     // }
+    // }
+    StyleSheet::parse(code, config)
 }
 
 async fn process_content(
@@ -466,16 +465,32 @@ async fn process_content(
     ty: CssModuleType,
     environment: Option<ResolvedVc<Environment>>,
     feature_flags: LightningCssFeatureFlags,
+    css_modules_pattern: Option<RcStr>,
 ) -> Result<Vc<ParseCssResult>> {
-    #[allow(clippy::needless_lifetimes)]
-    fn without_warnings<'i>(config: ParserOptions<'i>) -> ParserOptions<'static> {
+    fn pattern_into_static(pattern: Pattern) -> Pattern {
+        Pattern {
+            segments: pattern
+                .segments
+                .into_iter()
+                .map(|segment| match segment {
+                    Segment::Literal(literal) => Segment::Literal(Cow::Owned(literal.into_owned())),
+                    Segment::Name => Segment::Name,
+                    Segment::Local => Segment::Local,
+                    Segment::Hash => Segment::Hash,
+                    Segment::ContentHash => Segment::ContentHash,
+                })
+                .collect(),
+        }
+    }
+
+    fn without_warnings(config: ParserOptions<'_>) -> ParserOptions<'static> {
         ParserOptions {
             filename: config.filename,
             css_modules: config.css_modules,
             source_index: config.source_index,
             error_recovery: config.error_recovery,
             warnings: None,
-            flags: config.flags,
+            flags: config.flags.clone(),
         }
     }
 
@@ -492,11 +507,16 @@ async fn process_content(
         include_features.contains(Features::CustomMediaQueries),
     );
 
-    let config = ParserOptions {
+    let css_modules_pattern = match css_modules_pattern {
+        Some(pattern) => Some(pattern_into_static(Pattern::parse(&pattern)?)),
+        None => None,
+    };
+
+    let config: ParserOptions<'static> = ParserOptions {
         flags,
         css_modules: match ty {
             CssModuleType::Module => Some(lightningcss::css_modules::Config {
-                pattern: Pattern {
+                pattern: css_modules_pattern.unwrap_or_else(|| Pattern {
                     segments: smallvec![
                         Segment::Name,
                         Segment::Literal(Cow::Borrowed("__")),
@@ -504,7 +524,7 @@ async fn process_content(
                         Segment::Literal(Cow::Borrowed("__")),
                         Segment::Local,
                     ],
-                },
+                }),
                 dashed_idents: false,
                 grid: false,
                 container: false,
@@ -520,34 +540,28 @@ async fn process_content(
 
     let stylesheet = {
         let warnings: Arc<RwLock<_>> = Default::default();
+        let parse_options = ParserOptions {
+            filename: config.filename.clone(),
+            css_modules: config.css_modules.clone(),
+            source_index: config.source_index,
+            error_recovery: config.error_recovery,
+            warnings: Some(warnings.clone()),
+            flags: config.flags.clone(),
+        };
 
-        match parse_css_stylesheet(
-            &code,
-            ParserOptions {
-                warnings: Some(warnings.clone()),
-                ..config.clone()
-            },
-            ty,
-            source,
-        ) {
+        match parse_css_stylesheet(&code, parse_options, ty, source) {
             Ok(mut ss) => {
                 for err in warnings.read().unwrap().iter() {
-                    // Unsupported pseudo-classes/elements are common in real-world CSS
-                    // (vendor prefixes, custom frameworks) and do not prevent the
-                    // stylesheet from being used — treat them as recoverable warnings.
-                    // All other previously-ignored parser warnings are also surfaced.
-                    let severity = match err.kind {
-                        lightningcss::error::ParserError::SelectorError(
-                            lightningcss::error::SelectorError::UnsupportedPseudoClass(_)
-                            | lightningcss::error::SelectorError::UnsupportedPseudoElement(_),
-                        ) => IssueSeverity::Warning,
-
+                    let severity = match &err.kind {
+                        // Ignore all SelectorError errors
+                        lightningcss::error::ParserError::SelectorError(..) => {
+                            continue;
+                        }
                         lightningcss::error::ParserError::UnexpectedToken(_)
                         | lightningcss::error::ParserError::UnexpectedImportRule
-                        | lightningcss::error::ParserError::SelectorError(..)
-                        | lightningcss::error::ParserError::EndOfInput => IssueSeverity::Error,
-
-                        _ => IssueSeverity::Warning,
+                        | lightningcss::error::ParserError::EndOfInput => IssueSeverity::Warning,
+                        // Preserve utoo's behavior of ignoring other parser warnings.
+                        _ => continue,
                     };
 
                     let issue_source = match &err.loc {
@@ -600,15 +614,15 @@ async fn process_content(
                     .emit();
                     // Re-parse to get a fresh stylesheet since minify may
                     // have partially modified the original.
-                    match parse_css_stylesheet(
-                        &code,
-                        ParserOptions {
-                            warnings: None,
-                            ..config.clone()
-                        },
-                        ty,
-                        source,
-                    ) {
+                    let parse_options = ParserOptions {
+                        filename: config.filename.clone(),
+                        css_modules: config.css_modules.clone(),
+                        source_index: config.source_index,
+                        error_recovery: config.error_recovery,
+                        warnings: None,
+                        flags: config.flags.clone(),
+                    };
+                    match parse_css_stylesheet(&code, parse_options, ty, source) {
                         Ok(fresh) => {
                             stylesheet_into_static(&fresh, without_warnings(config.clone()))
                         }
@@ -619,6 +633,11 @@ async fn process_content(
                 }
             }
             Err(e) => {
+                // Ignore all SelectorError errors
+                if matches!(e.kind, lightningcss::error::ParserError::SelectorError(..)) {
+                    return Ok(ParseCssResult::Unparsable.cell());
+                }
+
                 let issue_source = match &e.loc {
                     Some(loc) => IssueSource::from_single_line_col(
                         source,
@@ -663,16 +682,19 @@ async fn process_content(
 /// ```
 ///
 /// is wrong for a css module because it doesn't have a class name.
+#[allow(dead_code)]
 struct CssValidator {
     errors: Vec<CssError>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 enum CssError {
     CssSelectorInModuleNotPure { selector: String },
 }
 
 impl CssError {
+    #[allow(unused, dead_code)]
     fn report(self, source: ResolvedVc<Box<dyn Source>>) {
         match self {
             CssError::CssSelectorInModuleNotPure { selector } => {

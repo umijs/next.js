@@ -17,12 +17,17 @@ export type ClientOptions = {
   addMessageListener: (cb: (msg: WebSocketMessage) => void) => void
   sendMessage: SendMessage
   onUpdateError: (err: unknown) => void
+  chunkUpdateListenersGlobal: string
 }
+
+export const TURBOPACK_CHUNK_UPDATE_LISTENERS_GLOBAL =
+  'TURBOPACK_CHUNK_UPDATE_LISTENERS'
 
 export function connect({
   addMessageListener,
   sendMessage,
   onUpdateError = console.error,
+  chunkUpdateListenersGlobal,
 }: ClientOptions) {
   addMessageListener((msg) => {
     switch (msg.type) {
@@ -55,25 +60,32 @@ export function connect({
     }
   })
 
-  const queued = globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS
+  const global = globalThis as unknown as Record<
+    string,
+    | ChunkUpdateProvider
+    | [ChunkListPath, UpdateCallback, expectedVersion: string][]
+    | undefined
+  >
+  const queued = global[chunkUpdateListenersGlobal]
   if (queued != null && !Array.isArray(queued)) {
     throw new Error('A separate HMR handler was already registered')
   }
-  globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS = {
-    push: ([chunkPath, callback]: [ChunkListPath, UpdateCallback]) => {
-      subscribeToChunkUpdate(chunkPath, sendMessage, callback)
+  global[chunkUpdateListenersGlobal] = {
+    push: ([chunkPath, callback, expectedVersion]) => {
+      subscribeToChunkUpdate(chunkPath, sendMessage, callback, expectedVersion)
     },
   }
 
   if (Array.isArray(queued)) {
-    for (const [chunkPath, callback] of queued) {
-      subscribeToChunkUpdate(chunkPath, sendMessage, callback)
+    for (const [chunkPath, callback, expectedVersion] of queued) {
+      subscribeToChunkUpdate(chunkPath, sendMessage, callback, expectedVersion)
     }
   }
 }
 
 type UpdateCallbackSet = {
   callbacks: Set<UpdateCallback>
+  expectedVersion?: string
   unsubscribe: () => void
 }
 
@@ -94,11 +106,13 @@ function resourceKey(resource: ResourceIdentifier): ResourceKey {
 
 function subscribeToUpdates(
   sendMessage: SendMessage,
-  resource: ResourceIdentifier
+  resource: ResourceIdentifier,
+  expectedVersion?: string
 ): () => void {
   sendJSON(sendMessage, {
     type: 'turbopack-subscribe',
     ...resource,
+    version: expectedVersion,
   })
 
   return () => {
@@ -110,8 +124,12 @@ function subscribeToUpdates(
 }
 
 function handleSocketConnected(sendMessage: SendMessage) {
-  for (const key of updateCallbackSets.keys()) {
-    subscribeToUpdates(sendMessage, JSON.parse(key))
+  for (const [key, callbackSet] of updateCallbackSets) {
+    callbackSet.unsubscribe = subscribeToUpdates(
+      sendMessage,
+      JSON.parse(key),
+      callbackSet.expectedVersion
+    )
   }
 }
 
@@ -544,21 +562,24 @@ function finalizeUpdate() {
 function subscribeToChunkUpdate(
   chunkListPath: ChunkListPath,
   sendMessage: SendMessage,
-  callback: UpdateCallback
+  callback: UpdateCallback,
+  expectedVersion: string
 ): () => void {
   return subscribeToUpdate(
     {
       path: chunkListPath,
     },
     sendMessage,
-    callback
+    callback,
+    expectedVersion
   )
 }
 
 export function subscribeToUpdate(
   resource: ResourceIdentifier,
   sendMessage: SendMessage,
-  callback: UpdateCallback
+  callback: UpdateCallback,
+  expectedVersion?: string
 ) {
   const key = resourceKey(resource)
   let callbackSet: UpdateCallbackSet
@@ -566,10 +587,15 @@ export function subscribeToUpdate(
   if (!existingCallbackSet) {
     callbackSet = {
       callbacks: new Set([callback]),
-      unsubscribe: subscribeToUpdates(sendMessage, resource),
+      expectedVersion,
+      unsubscribe: subscribeToUpdates(sendMessage, resource, expectedVersion),
     }
     updateCallbackSets.set(key, callbackSet)
   } else {
+    if (existingCallbackSet.expectedVersion !== expectedVersion) {
+      location.reload()
+      return () => {}
+    }
     existingCallbackSet.callbacks.add(callback)
     callbackSet = existingCallbackSet
   }
@@ -589,6 +615,13 @@ function triggerUpdate(msg: ServerMessage) {
   const callbackSet = updateCallbackSets.get(key)
   if (!callbackSet) {
     return
+  }
+
+  if (msg.type === 'partial') {
+    // A successfully applied update advances the browser beyond the version
+    // embedded in the original chunk list. Reconnecting without that stale
+    // token lets the server establish a new baseline for the current page.
+    callbackSet.expectedVersion = undefined
   }
 
   for (const callback of callbackSet.callbacks) {

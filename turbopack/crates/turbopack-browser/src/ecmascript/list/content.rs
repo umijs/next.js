@@ -109,6 +109,7 @@ impl EcmascriptDevChunkListContent {
     #[turbo_tasks::function]
     pub(super) async fn code(self: Vc<Self>) -> Result<Vc<Code>> {
         let this = self.await?;
+        let version = self.version().id().owned().await?;
 
         let chunks = this
             .chunks_contents
@@ -125,7 +126,7 @@ impl EcmascriptDevChunkListContent {
 
         let mut code = CodeBuilder::default();
 
-        // When loaded, JS chunks must register themselves with the `TURBOPACK` global
+        // When loaded, JS chunks must register themselves with the chunk loading global
         // variable. Similarly, we register the chunk list with the
         // `{chunk_loading_global}_CHUNK_LISTS` global variable.
         let chunk_lists_global = format!("{}_CHUNK_LISTS", this.chunk_loading_global);
@@ -137,12 +138,14 @@ impl EcmascriptDevChunkListContent {
                 (globalThis[{chunk_lists_global}] || (globalThis[{chunk_lists_global}] = [])).push({{
                     script: {script_or_path},
                     chunks: {chunks},
-                    source: {source}
+                    source: {source},
+                    version: {version}
                 }});
             "#,
             chunk_lists_global = StringifyJs(&chunk_lists_global),
             chunks = StringifyJs(&chunks),
             source = StringifyJs(&this.source),
+            version = StringifyJs(&version),
         )?;
 
         Ok(Code::cell(code.build()))

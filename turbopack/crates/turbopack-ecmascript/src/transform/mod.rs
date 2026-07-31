@@ -9,8 +9,8 @@ use swc_core::{
     common::{Mark, SourceMap, comments::Comments},
     ecma::{
         ast::{
-            ArrowExpr, BlockStmtOrExpr, Expr, ExprStmt, Function, Lit, ModuleItem, Pass, Program,
-            Stmt,
+            ArrowExpr, BlockStmtOrExpr, ClassMember, Expr, ExprStmt, Function, Lit, ModuleItem,
+            Pass, Program, Stmt,
         },
         preset_env::{self, Feature, FeatureOrModule, Targets},
         transforms::{
@@ -22,7 +22,7 @@ use swc_core::{
             typescript::{Config, typescript},
         },
         utils::IsDirective,
-        visit::{Visit, VisitWith},
+        visit::{Visit, VisitMut, VisitMutWith, VisitWith, noop_visit_mut_type},
     },
     quote,
 };
@@ -64,6 +64,28 @@ pub struct PresetEnvConfig {
     pub debug: Option<bool>,
     /// Enable loose mode for transforms.
     pub loose: Option<bool>,
+}
+
+struct StripUninitializedClassFields;
+
+impl VisitMut for StripUninitializedClassFields {
+    noop_visit_mut_type!();
+
+    fn visit_mut_class_members(&mut self, members: &mut Vec<ClassMember>) {
+        members.retain(|member| {
+            match member {
+                // Remove class properties without initializers (type-only declarations)
+                ClassMember::ClassProp(prop) => prop.value.is_some(),
+                // Remove private properties without initializers
+                ClassMember::PrivateProp(prop) => prop.value.is_some(),
+                // Keep all other members
+                _ => true,
+            }
+        });
+
+        // Continue visiting children
+        members.visit_mut_children_with(self);
+    }
 }
 
 #[turbo_tasks::value]
@@ -371,8 +393,7 @@ impl EcmascriptInputTransform {
                 )
             }
             EcmascriptInputTransform::TypeScript {
-                // TODO(WEB-1213)
-                use_define_for_class_fields: _use_define_for_class_fields,
+                use_define_for_class_fields,
                 verbatim_module_syntax,
             } => {
                 let config = Config {
@@ -383,20 +404,28 @@ impl EcmascriptInputTransform {
                     program,
                     helpers,
                     typescript(config, unresolved_mark, top_level_mark),
-                )
+                );
+
+                // When useDefineForClassFields is false (TypeScript legacy behavior),
+                // class field declarations without initializers should be stripped
+                // as they are type-only declarations.
+                if !use_define_for_class_fields {
+                    program.visit_mut_with(&mut StripUninitializedClassFields);
+                }
+
+                helpers
             }
             EcmascriptInputTransform::Decorators {
                 is_legacy,
                 is_ecma: _,
                 emit_decorators_metadata,
-                // TODO(WEB-1213)
-                use_define_for_class_fields: _use_define_for_class_fields,
+                use_define_for_class_fields,
             } => {
                 use swc_core::ecma::transforms::proposal::decorators::{Config, decorators};
                 let config = Config {
                     legacy: *is_legacy,
                     emit_metadata: *emit_decorators_metadata,
-                    ..Default::default()
+                    use_define_for_class_fields: *use_define_for_class_fields,
                 };
 
                 apply_transform(program, helpers, decorators(config))
