@@ -43,6 +43,18 @@ type RefreshContext = {
 
 type RefreshHelpers = RefreshRuntimeGlobals['$RefreshHelpers$']
 
+function getRefreshBoundaryExports<T>(exports: T): T {
+  if (
+    typeof isAsyncModuleExt === 'function' &&
+    exports != null &&
+    typeof exports === 'object' &&
+    isAsyncModuleExt(exports)
+  ) {
+    return exports[turbopackExports] as T
+  }
+  return exports
+}
+
 type ModuleFactory = (
   this: Module['exports'],
   context: TurbopackDevContext
@@ -234,7 +246,7 @@ function registerExportsAndSetupBoundaryForReactRefresh(
   module: HotModule,
   helpers: RefreshHelpers
 ) {
-  const currentExports = module.exports
+  const currentExports = getRefreshBoundaryExports(module.exports)
   const prevExports = module.hot.data.prevExports ?? null
 
   helpers.registerExportsForReactRefresh(currentExports, module.id)
@@ -579,7 +591,7 @@ function registerChunkList(chunkList: ChunkList) {
   const chunkListPath = getPathFromScript(chunkListScript)
   // The "chunk" is also registered to finish the loading in the backend
   BACKEND.registerChunk(chunkListPath as string as ChunkPath)
-  globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS!.push([
+  CHUNK_UPDATE_LISTENERS.push([
     chunkListPath,
     handleApply.bind(null, chunkListPath),
   ])
@@ -601,5 +613,3 @@ function registerChunkList(chunkList: ChunkList) {
     markChunkListAsRuntime(chunkListPath)
   }
 }
-
-globalThis.TURBOPACK_CHUNK_UPDATE_LISTENERS ??= []

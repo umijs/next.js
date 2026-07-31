@@ -19,7 +19,7 @@ use turbopack_ecmascript::{
         EcmascriptHmrChunkContent, merger::EcmascriptChunkContentMerger,
         version::EcmascriptChunkVersion,
     },
-    minify::minify,
+    minify::{get_compress_options, minify},
     utils::StringifyJs,
 };
 
@@ -122,8 +122,15 @@ impl EcmascriptBrowserChunkContent {
 
         let mut code = code.build();
 
-        if let MinifyType::Minify { mangle } = *this.chunking_context.minify_type().await? {
-            code = minify(code, source_maps, mangle)?;
+        if let MinifyType::Minify { mangle, compress } =
+            *this.chunking_context.minify_type().await?
+        {
+            code = minify(
+                code,
+                source_maps,
+                mangle,
+                get_compress_options(compress, mangle),
+            )?;
         }
 
         Ok(code.cell())

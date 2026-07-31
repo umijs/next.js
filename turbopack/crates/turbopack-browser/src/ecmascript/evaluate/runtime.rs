@@ -10,8 +10,8 @@ use turbopack_core::{
     output::{OutputAsset, OutputAssetsReference, OutputAssetsWithReferenced},
     source_map::{GenerateSourceMap, SourceMapAsset},
 };
-use turbopack_ecmascript::minify::minify;
-use turbopack_ecmascript_runtime::RuntimeType;
+use turbopack_ecmascript::minify::{get_compress_options, minify};
+use turbopack_ecmascript_runtime::{RuntimeType, browser_runtime_options};
 
 use crate::BrowserChunkingContext;
 
@@ -27,6 +27,7 @@ use crate::BrowserChunkingContext;
 pub(crate) struct EcmascriptBrowserRuntimeChunk {
     chunking_context: ResolvedVc<BrowserChunkingContext>,
     has_async_modules: bool,
+    has_external_modules: bool,
 }
 
 #[turbo_tasks::value_impl]
@@ -35,10 +36,12 @@ impl EcmascriptBrowserRuntimeChunk {
     pub fn new(
         chunking_context: ResolvedVc<BrowserChunkingContext>,
         has_async_modules: bool,
+        has_external_modules: bool,
     ) -> Vc<Self> {
         EcmascriptBrowserRuntimeChunk {
             chunking_context,
             has_async_modules,
+            has_external_modules,
         }
         .cell()
     }
@@ -63,6 +66,7 @@ impl EcmascriptBrowserRuntimeChunk {
                 let runtime_code = turbopack_ecmascript_runtime::get_browser_runtime_code(
                     asset_context,
                     chunking_context.chunk_base_path(),
+                    chunking_context.worker_configuration_options(),
                     chunking_context.asset_suffix(),
                     runtime_type,
                     output_root_to_root_path,
@@ -70,9 +74,13 @@ impl EcmascriptBrowserRuntimeChunk {
                     chunking_context.chunk_loading_global(),
                     chunking_context.cross_origin(),
                     chunking_context.chunk_load_retry(),
-                    this.has_async_modules,
                     chunking_context.chunk_loading(),
-                    *chunking_context.generate_component_chunks().await?,
+                    browser_runtime_options(
+                        this.has_async_modules,
+                        this.has_external_modules,
+                        chunking_context.entry_root_export().owned().await?,
+                        *chunking_context.generate_component_chunks().await?,
+                    ),
                 );
                 code.push_code(&*runtime_code.await?);
             }
@@ -85,8 +93,13 @@ impl EcmascriptBrowserRuntimeChunk {
 
         let mut code = code.build();
 
-        if let MinifyType::Minify { mangle } = *chunking_context.minify_type().await? {
-            code = minify(code, source_maps, mangle)?;
+        if let MinifyType::Minify { mangle, compress } = *chunking_context.minify_type().await? {
+            code = minify(
+                code,
+                source_maps,
+                mangle,
+                get_compress_options(compress, mangle),
+            )?;
         }
 
         Ok(code.cell())

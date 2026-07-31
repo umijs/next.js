@@ -1,39 +1,50 @@
 use std::{
     any::Any,
     collections::BTreeSet,
-    env, fmt,
+    fmt,
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use std::{
+    env,
     mem::take,
-    path::{Path, PathBuf},
     sync::{
-        Arc, LazyLock,
+        LazyLock,
         mpsc::{Receiver, RecvTimeoutError, channel},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use anyhow::{Context, Result};
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use anyhow::Context;
+use anyhow::Result;
 use bincode::{Decode, Encode};
 use bitflags::bitflags;
-use notify::{
-    Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher,
-    event::{MetadataKind, ModifyKind, RenameMode},
-};
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use notify::{Config, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
+use notify_types::event::{Event, EventKind, MetadataKind, ModifyKind, RenameMode};
+use regex::RegexSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tracing::instrument;
 use turbo_rcstr::RcStr;
 use turbo_tasks::{
-    FxIndexSet, InvalidationReason, InvalidationReasonKind, Invalidator, TurboTasksApi, parallel,
-    spawn_thread, util::StaticOrArc,
+    FxIndexSet, InvalidationReason, InvalidationReasonKind, Invalidator, TurboTasksApi,
+    util::StaticOrArc,
 };
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use turbo_tasks::{parallel, spawn_thread};
 
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+use crate::invalidation::WatchStart;
 use crate::{
-    DiskFileSystemInner, format_absolute_fs_path,
-    invalidation::{WatchChange, WatchStart},
-    invalidator_map::InvalidatorMap,
-    path_map::OrderedPathMapExt,
+    DiskFileSystemInner, format_absolute_fs_path, invalidation::WatchChange,
+    invalidator_map::InvalidatorMap, path_map::OrderedPathMapExt,
 };
 
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 static WATCH_RECURSIVE_MODE: LazyLock<RecursiveMode> = LazyLock::new(|| {
     match env::var("TURBO_TASKS_FORCE_WATCH_MODE").as_deref() {
         Ok("recursive") => {
@@ -66,15 +77,27 @@ static WATCH_RECURSIVE_MODE: LazyLock<RecursiveMode> = LazyLock::new(|| {
 /// reduces invalidations if the same file or directory is modified many times.
 ///
 /// Linux watching is too fast, so we need a longer delay there to avoid reading wip files.
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    not(all(target_family = "wasm", target_os = "unknown")),
+    target_os = "linux"
+))]
 const BATCH_DELAY: Duration = Duration::from_millis(10);
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(
+    not(all(target_family = "wasm", target_os = "unknown")),
+    not(target_os = "linux")
+))]
 const BATCH_DELAY: Duration = Duration::from_millis(1);
 
 #[derive(Encode, Decode)]
 pub(crate) struct DiskWatcher {
     #[bincode(skip)]
     state: State,
+    /// Paths to ignore when watching for file changes
+    #[bincode(skip)]
+    ignored_paths: Arc<Vec<RcStr>>,
+    /// Package name regular expressions that opt dependencies back into watching.
+    #[bincode(skip)]
+    node_modules_regexes: Option<Arc<RegexSet>>,
 }
 
 enum State {
@@ -97,12 +120,15 @@ enum StateWriteGuard<'a> {
 
 impl State {
     fn new_stopped() -> Self {
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
         match *WATCH_RECURSIVE_MODE {
             RecursiveMode::Recursive => Self::Recursive(RwLock::new(RecursiveState::Stopped)),
             RecursiveMode::NonRecursive => {
                 Self::NonRecursive(RwLock::new(NonRecursiveState::Stopped))
             }
         }
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+        Self::Recursive(RwLock::new(RecursiveState::Stopped))
     }
 
     async fn write(&self) -> StateWriteGuard<'_> {
@@ -112,11 +138,9 @@ impl State {
         }
     }
 
-    fn recursive_mode(&self) -> RecursiveMode {
-        match self {
-            Self::Recursive(_) => RecursiveMode::Recursive,
-            Self::NonRecursive(_) => RecursiveMode::NonRecursive,
-        }
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    fn is_non_recursive(&self) -> bool {
+        matches!(self, Self::NonRecursive(_))
     }
 }
 
@@ -128,6 +152,7 @@ enum RecursiveState {
     Stopped,
     Watching {
         /// Hold onto the watcher: When this is dropped, it will cause the channel to disconnect
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
         _notify_watcher: NotifyWatcher,
     },
 }
@@ -142,6 +167,7 @@ enum NonRecursiveState {
 
 // split out from the `NonRecursiveState` enum because we want to pass this value around
 struct NonRecursiveWatchingState {
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     notify_watcher: NotifyWatcher,
     /// Keeps track of which directories are currently or were previously watched by
     /// [`Self::notify_watcher`].
@@ -154,11 +180,13 @@ struct NonRecursiveWatchingState {
 }
 
 /// A thin wrapper around [`RecommendedWatcher`] and [`PollWatcher`].
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 enum NotifyWatcher {
     Recommended(RecommendedWatcher),
     Polling(PollWatcher),
 }
 
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 impl NotifyWatcher {
     fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> notify::Result<()> {
         match self {
@@ -168,11 +196,13 @@ impl NotifyWatcher {
     }
 }
 
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 mod non_recursive_helpers {
     use super::*;
     use crate::path_map::OrderedPathSetExt;
 
     /// Called after a rescan in case a previously watched-but-deleted directory was recreated.
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     #[instrument(skip_all, level = "trace")]
     pub async fn restore_all_watched_ignore_errors(
         state: &RwLock<NonRecursiveState>,
@@ -194,6 +224,7 @@ mod non_recursive_helpers {
 
     /// Called when a new directory is found in a parent directory we're watching. Restores the
     /// watcher if we were previously watching it.
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     #[instrument(skip_all, level = "trace")]
     pub async fn restore_if_watched(
         state: &RwLock<NonRecursiveState>,
@@ -280,6 +311,7 @@ mod non_recursive_helpers {
     /// This does not watch any of the parent directories. For that, use
     /// [`start_watching_dir_and_parents`]. Use this method when iterating over previously-watched
     /// values in `self.watching`.
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     fn start_watching_dir(
         notify_watcher: &mut NotifyWatcher,
         dir_path: &Path,
@@ -309,6 +341,7 @@ mod non_recursive_helpers {
     /// Watches the given `dir_path` and every parent up to `root_path`. Parents must be recursively
     /// watched in case any of them change:
     /// https://docs.rs/notify/latest/notify/#parent-folder-deletion
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     fn start_watching_dir_and_parents(
         state: &mut NonRecursiveWatchingState,
         dir_path: &Path,
@@ -355,9 +388,46 @@ mod non_recursive_helpers {
 
 impl DiskWatcher {
     pub fn new() -> Self {
+        Self::new_with_ignored_paths(vec![])
+    }
+
+    /// Creates a watcher with ignored path components. Entries prefixed with
+    /// `!node_modules/` are package-name regular expressions that opt dependencies back in.
+    pub fn new_with_ignored_paths(ignored_paths: Vec<RcStr>) -> Self {
+        const NODE_MODULES_NEGATED_REGEX_PREFIX: &str = "!node_modules/";
+
+        let mut paths = Vec::with_capacity(ignored_paths.len());
+        let mut node_modules_regexes = Vec::new();
+        for ignored in ignored_paths {
+            if let Some(pattern) = ignored.strip_prefix(NODE_MODULES_NEGATED_REGEX_PREFIX) {
+                node_modules_regexes.push(RcStr::from(pattern));
+            } else {
+                paths.push(ignored);
+            }
+        }
+
+        let node_modules_regexes = if node_modules_regexes.is_empty() {
+            None
+        } else {
+            RegexSet::new(node_modules_regexes.iter().map(RcStr::as_str))
+                .ok()
+                .map(Arc::new)
+        };
+
         Self {
             state: State::new_stopped(),
+            ignored_paths: Arc::new(paths),
+            node_modules_regexes,
         }
+    }
+
+    /// Check if a path should be ignored based on configured ignore patterns
+    fn should_ignore_path(&self, path: &Path) -> bool {
+        should_ignore_path(
+            path,
+            &self.ignored_paths,
+            self.node_modules_regexes.as_deref(),
+        )
     }
 
     /// Create a watcher and start watching by creating `debounced` watcher
@@ -375,6 +445,7 @@ impl DiskWatcher {
     /// - Emits only one Remove event when deleting a directory (inotify)
     /// - Doesn't emit duplicate create events
     /// - Doesn't emit Modify events after a Create event
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     pub async fn start_watching(
         &self,
         fs_inner: Arc<DiskFileSystemInner>,
@@ -479,6 +550,59 @@ impl DiskWatcher {
         Ok(())
     }
 
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    pub(crate) async fn start_watching(
+        &self,
+        fs_inner: Arc<DiskFileSystemInner>,
+        report_invalidation_reason: bool,
+        _poll_interval: Option<Duration>,
+    ) -> Result<()> {
+        use crate::wasm_fs_offload;
+
+        let fs_inner_arc = fs_inner.clone();
+        let root_path = fs_inner_arc.root_path();
+        let ignored_paths = self.ignored_paths.clone();
+        let node_modules_regexes = self.node_modules_regexes.clone();
+        wasm_fs_offload::CLIENT
+            .watch_dir(root_path, true, move |event| {
+                let Some(event) = filter_event_paths(event, |path| {
+                    should_ignore_path(path, &ignored_paths, node_modules_regexes.as_deref())
+                }) else {
+                    return;
+                };
+
+                let mut batch = BatchedInvalidations::new(false);
+                if !batch.add_event(event) {
+                    return;
+                }
+
+                let Some(turbo_tasks) = fs_inner.turbo_tasks.upgrade() else {
+                    // TurboTasks was dropped, stop watching
+                    // wasm_fs_offload::CLIENT.stop_watching();
+                    return;
+                };
+                let _guard = fs_inner.tokio_handle.enter();
+                // `invalidation_lock.blocking_write()` hangs in the browser wasm runtime. The
+                // OPFS callback executes the shared batch directly instead.
+                batch.execute(
+                    &fs_inner.invalidator_map,
+                    &fs_inner.dir_invalidator_map,
+                    |invalidation_reason_path, invalidator| {
+                        invalidate(
+                            &fs_inner,
+                            &*turbo_tasks,
+                            report_invalidation_reason,
+                            invalidation_reason_path,
+                            invalidator,
+                        )
+                    },
+                );
+            })
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn stop_watching(&self) {
         match &self.state {
             State::Recursive(state) => *state.write().await = RecursiveState::Stopped,
@@ -492,13 +616,14 @@ impl DiskWatcher {
     /// and invalidates the cache.
     ///
     /// Should only be called once from `start_watching`.
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     fn watch_thread(
         &self,
         rx: Receiver<notify::Result<notify::Event>>,
         fs_inner: Arc<DiskFileSystemInner>,
         report_invalidation_reason: bool,
     ) {
-        let mut batch = BatchedInvalidations::new(self.state.recursive_mode());
+        let mut batch = BatchedInvalidations::new(self.state.is_non_recursive());
 
         'outer: loop {
             let mut deadline: Option<Instant> = None;
@@ -559,6 +684,11 @@ impl DiskWatcher {
 
                         // Only an event that contributes to the batch keeps it open for another
                         // `BATCH_DELAY`.
+                        let Some(event) =
+                            filter_event_paths(event, |path| self.should_ignore_path(path))
+                        else {
+                            continue;
+                        };
                         if batch.add_event(event) {
                             deadline = Some(Instant::now() + BATCH_DELAY);
                         }
@@ -633,6 +763,7 @@ impl DiskWatcher {
         // Watch the parent directory instead of the specified file, since directories also track
         // their immediate children (even in non-recursive mode), and we need to watch all the
         // parents anyways.
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
         if let State::NonRecursive(non_recursive) = &self.state
             && let Some(dir_path) = path.parent()
         {
@@ -642,6 +773,7 @@ impl DiskWatcher {
     }
 
     pub async fn ensure_watched_dir(&self, dir_path: &Path, root_path: &Path) -> Result<()> {
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
         if let State::NonRecursive(non_recursive) = &self.state {
             non_recursive_helpers::ensure_watched(non_recursive, dir_path, root_path).await?;
         }
@@ -675,18 +807,15 @@ bitflags! {
 /// `PathBuf` into multiple collections.
 struct BatchedInvalidations {
     paths: FxHashMap<Box<Path>, InvalidationFlags>,
-    /// See [`Self::new_paths`]). Stored as [`None`] in non-recursive mode.
+    /// See [`Self::new_paths`]. Stored as [`None`] in recursive mode.
     new_paths: Option<FxHashSet<Box<Path>>>,
 }
 
 impl BatchedInvalidations {
-    fn new(recursive_mode: RecursiveMode) -> Self {
+    fn new(non_recursive: bool) -> Self {
         Self {
             paths: FxHashMap::default(),
-            new_paths: match recursive_mode {
-                RecursiveMode::NonRecursive => Some(FxHashSet::default()),
-                RecursiveMode::Recursive => None,
-            },
+            new_paths: non_recursive.then(FxHashSet::default),
         }
     }
 
@@ -727,7 +856,7 @@ impl BatchedInvalidations {
     ///
     /// Returns `true` if the event contained relevant events, or `false` if it was filtered out.
     #[must_use]
-    fn add_event(&mut self, event: notify::Event) -> bool {
+    fn add_event(&mut self, event: Event) -> bool {
         let paths: Vec<PathBuf> = event.paths;
         if paths.is_empty() {
             return false;
@@ -861,6 +990,82 @@ impl BatchedInvalidations {
     }
 }
 
+/// Removes ignored paths from an event and preserves the rename invariant expected by
+/// [`BatchedInvalidations::add_event`]. A `RenameMode::Both` event may cross an ignored-path
+/// boundary, leaving only one visible endpoint. Treat that as an unmatched rename so the visible
+/// path and its children are still invalidated instead of panicking on the missing endpoint.
+fn filter_event_paths(
+    mut event: Event,
+    mut should_ignore: impl FnMut(&Path) -> bool,
+) -> Option<Event> {
+    event.paths.retain(|path| !should_ignore(path));
+    if event.paths.is_empty() {
+        return None;
+    }
+    if matches!(
+        event.kind,
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+    ) && event.paths.len() != 2
+    {
+        event.kind = EventKind::Modify(ModifyKind::Name(RenameMode::Any));
+    }
+    Some(event)
+}
+
+fn should_ignore_path(
+    path: &Path,
+    ignored_paths: &[RcStr],
+    node_modules_regexes: Option<&RegexSet>,
+) -> bool {
+    if ignored_paths.is_empty() {
+        return false;
+    }
+
+    let watch_node_module = node_modules_regexes
+        .map(|regexes| matches_node_module_package(path, regexes))
+        .unwrap_or(false);
+
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+
+        ignored_paths.iter().any(|ignored| {
+            ignored.as_str() == name && (name != "node_modules" || !watch_node_module)
+        })
+    })
+}
+
+fn matches_node_module_package(path: &Path, regexes: &RegexSet) -> bool {
+    let mut components = path.components().filter_map(|component| match component {
+        Component::Normal(name) => name.to_str(),
+        _ => None,
+    });
+    let mut matches = false;
+
+    while let Some(component) = components.next() {
+        if component != "node_modules" {
+            continue;
+        }
+        matches = false;
+        let Some(first) = components.next() else {
+            continue;
+        };
+        if first.starts_with('@') {
+            if let Some(second) = components.next() {
+                matches = regexes.is_match(&format!("{first}/{second}"));
+            }
+        } else {
+            matches = regexes.is_match(first);
+        }
+    }
+
+    matches
+}
+
 #[instrument(
     parent = None,
     level = "info",
@@ -926,5 +1131,98 @@ impl InvalidationReasonKind for InvalidateRescanKind {
                 .unwrap()
                 .path
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use notify_types::event::{Event, EventKind, ModifyKind, RenameMode};
+
+    use super::{BatchedInvalidations, DiskWatcher, InvalidationFlags, filter_event_paths};
+
+    #[test]
+    fn filters_rename_events_without_breaking_both_invariant() {
+        let watcher = DiskWatcher::new_with_ignored_paths(vec!["node_modules".into()]);
+        let visible_path = PathBuf::from("project/src/old.js");
+        let ignored_path = PathBuf::from("project/node_modules/pkg/new.js");
+
+        let event = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(visible_path.clone())
+            .add_path(ignored_path.clone());
+        let event = filter_event_paths(event, |path| watcher.should_ignore_path(path)).unwrap();
+
+        assert_eq!(event.paths, [visible_path.clone()]);
+        assert!(matches!(
+            event.kind,
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any))
+        ));
+
+        let mut batch = BatchedInvalidations::new(false);
+        assert!(batch.add_event(event));
+        let flags = batch.paths.get(visible_path.as_path()).unwrap();
+        assert!(flags.contains(InvalidationFlags::PATH_AND_CHILDREN));
+        assert!(flags.contains(InvalidationFlags::PATH_AND_CHILDREN_DIR));
+
+        let event = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(PathBuf::from("project/src/old.js"))
+            .add_path(PathBuf::from("project/src/new.js"));
+        let event = filter_event_paths(event, |path| watcher.should_ignore_path(path)).unwrap();
+        assert!(matches!(
+            event.kind,
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+        ));
+
+        let event = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(ignored_path.clone())
+            .add_path(ignored_path.join("nested"));
+        assert!(filter_event_paths(event, |path| watcher.should_ignore_path(path)).is_none());
+    }
+
+    #[test]
+    fn watches_matching_node_modules_packages() {
+        let watcher = DiskWatcher::new_with_ignored_paths(vec![
+            "node_modules".into(),
+            "!node_modules/rc-.*".into(),
+            "!node_modules/.*cssinjs.*".into(),
+            "!node_modules/@rc-component/.*".into(),
+        ]);
+
+        for path in [
+            "project/node_modules/rc-util/index.js",
+            "project/node_modules/@ant-design/cssinjs/index.js",
+            "project/node_modules/@rc-component/trigger/index.js",
+            "project/node_modules/.pnpm/rc-util@5.0.0/node_modules/rc-util/index.js",
+        ] {
+            assert!(!watcher.should_ignore_path(Path::new(path)));
+        }
+    }
+
+    #[test]
+    fn ignores_non_matching_node_modules_packages() {
+        let watcher = DiskWatcher::new_with_ignored_paths(vec![
+            "node_modules".into(),
+            "!node_modules/rc-.*".into(),
+        ]);
+
+        assert!(watcher.should_ignore_path(Path::new("project/node_modules/react/index.js")));
+        assert!(watcher.should_ignore_path(Path::new(
+            "project/node_modules/rc-util/node_modules/react/index.js",
+        )));
+        assert!(watcher.should_ignore_path(Path::new(
+            "project/node_modules/rc-util/node_modules/@scope",
+        )));
+        assert!(!watcher.should_ignore_path(Path::new("project/src/index.js")));
+    }
+
+    #[test]
+    fn ignores_invalid_node_modules_regexes() {
+        let watcher = DiskWatcher::new_with_ignored_paths(vec![
+            "node_modules".into(),
+            "!node_modules/[".into(),
+        ]);
+
+        assert!(watcher.should_ignore_path(Path::new("project/node_modules/rc-util/index.js",)));
     }
 }
