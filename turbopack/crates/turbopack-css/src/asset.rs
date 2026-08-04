@@ -183,7 +183,9 @@ impl StyleModule for CssModule {
     fn style_type(&self) -> Vc<StyleType> {
         match self.ty {
             CssModuleType::Default => StyleType::GlobalStyle.cell(),
-            CssModuleType::Module => StyleType::IsolatedStyle.cell(),
+            // CSS Modules can escape local scoping through `:global(...)`. Until isolation is
+            // derived from the parsed selectors, conservatively prevent cross-group overshipping.
+            CssModuleType::Module => StyleType::GlobalStyle.cell(),
         }
     }
 }

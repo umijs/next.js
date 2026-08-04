@@ -425,7 +425,7 @@ fn parse_css_stylesheet<'a>(
     //     //     err.report(source);
     //     // }
     // }
-    Ok(StyleSheet::parse(code, config)?)
+    StyleSheet::parse(code, config)
 }
 
 async fn process_content(
