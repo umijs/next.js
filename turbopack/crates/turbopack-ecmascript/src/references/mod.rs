@@ -460,6 +460,7 @@ struct AnalysisState<'a> {
     first_webpack_exports_info: bool,
     module_fragments_enabled: bool,
     cjs_tree_shaking: bool,
+    lazy_compilation: bool,
     import_externals: bool,
     ignore_dynamic_requests: bool,
     url_rewrite_behavior: Option<UrlRewriteBehavior>,
@@ -861,6 +862,7 @@ async fn analyze_ecmascript_module_internal(
             first_webpack_exports_info: true,
             module_fragments_enabled: options.module_fragments_enabled,
             cjs_tree_shaking: options.cjs_tree_shaking,
+            lazy_compilation: options.lazy_compilation,
             import_externals: options.import_externals,
             ignore_dynamic_requests: options.ignore_dynamic_requests,
             url_rewrite_behavior: options.url_rewrite_behavior,
@@ -1719,6 +1721,7 @@ async fn handle_dynamic_import<'a, G: Fn(BumpVec<'a, Effect<'a>>) + Send + Sync>
         origin,
         source,
         ignore_dynamic_requests,
+        lazy_compilation,
         ..
     } = state;
 
@@ -1765,6 +1768,7 @@ async fn handle_dynamic_import<'a, G: Fn(BumpVec<'a, Effect<'a>>) + Send + Sync>
         error_mode,
         state.import_externals,
         export_usage,
+        lazy_compilation,
     )
     .await
 }
@@ -1782,6 +1786,7 @@ async fn handle_dynamic_import_with_linked_args(
     error_mode: ResolveErrorMode,
     import_externals: bool,
     export_usage: ExportUsage,
+    lazy_compilation: bool,
 ) -> Result<()> {
     if linked_args.len() == 1 || linked_args.len() == 2 {
         let pat = js_value_to_pattern(&linked_args[0]);
@@ -1840,6 +1845,7 @@ async fn handle_dynamic_import_with_linked_args(
                 import_externals,
                 export_usage,
                 resolve_override,
+                lazy_compilation,
             )
             .await?,
             ast_path.to_vec().into(),
@@ -2145,6 +2151,7 @@ where
                 error_mode,
                 state.import_externals,
                 export_usage,
+                state.lazy_compilation,
             )
             .await?;
         }

@@ -29,7 +29,8 @@ pub use crate::chunk::{
     chunking_context::{
         AssetSuffix, ChunkGroupResult, ChunkGroupType, ChunkingConfig, ChunkingConfigs,
         ChunkingContext, ChunkingContextExt, CompressOptions, CompressType, EntryChunkGroupResult,
-        MangleType, MinifyType, SourceMapSourceType, SourceMapsType, UnusedReferences, UrlBehavior,
+        HmrChunkListSource, MangleType, MinifyType, SourceMapSourceType, SourceMapsType,
+        UnusedReferences, UrlBehavior,
         WorkerConfigurationOptions,
     },
     data::{ChunkData, ChunkDataOption, ChunksData},
