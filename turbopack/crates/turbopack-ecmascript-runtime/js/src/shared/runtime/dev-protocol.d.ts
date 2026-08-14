@@ -98,6 +98,7 @@ type ResourceIdentifier = {
 
 type ClientMessageSubscribe = {
   type: 'turbopack-subscribe'
+  version?: string
 } & ResourceIdentifier
 
 type ClientMessageUnsubscribe = {

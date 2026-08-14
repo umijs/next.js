@@ -594,6 +594,7 @@ function registerChunkList(chunkList: ChunkList) {
   CHUNK_UPDATE_LISTENERS.push([
     chunkListPath,
     handleApply.bind(null, chunkListPath),
+    chunkList.version,
   ])
 
   // Adding chunks to chunk lists and vice versa.
