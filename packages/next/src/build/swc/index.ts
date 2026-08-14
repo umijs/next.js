@@ -699,10 +699,6 @@ function bindingToApi(
       )
     }
 
-    async activateLazyChunk(chunkPath: string): Promise<boolean> {
-      return binding.projectActivateLazyChunk(this._nativeProject, chunkPath)
-    }
-
     async writeAnalyzeData(
       appDirOnly: boolean
     ): Promise<TurbopackResult<void>> {

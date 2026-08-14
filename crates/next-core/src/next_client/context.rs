@@ -377,8 +377,6 @@ pub async fn get_client_module_options_context(
             source_maps,
             infer_module_side_effects: *next_config.turbopack_infer_module_side_effects().await?,
             cjs_tree_shaking: *next_config.turbopack_cjs_tree_shaking().await?,
-            lazy_compilation: next_mode.is_development()
-                && *next_config.turbopack_lazy_dynamic_imports().await?,
             preset_env_config,
             ..Default::default()
         },
@@ -410,7 +408,6 @@ pub async fn get_client_module_options_context(
             enable_typeof_window_inlining: None,
             // Ignore e.g. import(`${url}`) requests in node_modules.
             ignore_dynamic_requests: true,
-            lazy_compilation: false,
             // Don't inject core-js polyfills into node_modules — only user code
             // should be processed by preset_env's usage/entry mode.
             preset_env_config: None,
@@ -433,7 +430,6 @@ pub async fn get_client_module_options_context(
             enable_jsx: Some(JsxTransformOptions::default().resolved_cell()),
             // Don't inject core-js polyfills into framework internals.
             preset_env_config: None,
-            lazy_compilation: false,
             ..module_options_context.ecmascript.clone()
         },
         enable_postcss_transform: None,
@@ -492,7 +488,6 @@ pub struct ClientChunkingContextOptions {
     pub scope_hoisting: Vc<bool>,
     pub nested_async_chunking: Vc<bool>,
     pub shared_runtime: Vc<bool>,
-    pub lazy_dynamic_imports: Vc<bool>,
     pub debug_ids: Vc<bool>,
     pub worker_asset_prefix: Vc<Option<RcStr>>,
     pub should_use_absolute_url_references: Vc<bool>,
@@ -541,7 +536,6 @@ pub async fn get_client_chunking_context(
         scope_hoisting,
         nested_async_chunking,
         shared_runtime,
-        lazy_dynamic_imports,
         debug_ids,
         worker_asset_prefix,
         should_use_absolute_url_references,
@@ -616,9 +610,7 @@ pub async fn get_client_chunking_context(
         builder = builder
             .hot_module_replacement()
             .source_map_source_type(SourceMapSourceType::AbsoluteFileUri)
-            .dynamic_chunk_content_loading(true)
-            // A manifest chunk keeps a lazily compiled import's URL stable across activation.
-            .manifest_chunks(*lazy_dynamic_imports.await?);
+            .dynamic_chunk_content_loading(true);
     } else {
         builder = builder
             .chunking_config(

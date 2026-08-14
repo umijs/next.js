@@ -311,8 +311,6 @@ export interface UpdateInfo {
 export interface Project {
   update(options: Partial<ProjectOptions>): Promise<void>
 
-  activateLazyChunk(chunkPath: string): Promise<boolean>
-
   writeAnalyzeData(appDirOnly: boolean): Promise<TurbopackResult<void>>
 
   getAllCompilationIssues(): Promise<TurbopackResult<void>>

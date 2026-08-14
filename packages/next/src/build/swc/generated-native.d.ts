@@ -334,10 +334,6 @@ export declare function projectUpdate(
   project: { __napiType: 'Project' },
   options: NapiPartialProjectOptions
 ): Promise<void>
-export declare function projectActivateLazyChunk(
-  project: { __napiType: 'Project' },
-  chunkPath: RcStr
-): Promise<boolean>
 /**
  * Invalidates the filesystem cache so that it will be deleted next time that a turbopack project
  * is created with filesystem cache enabled.
