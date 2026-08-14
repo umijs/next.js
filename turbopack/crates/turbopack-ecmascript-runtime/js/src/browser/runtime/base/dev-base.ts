@@ -66,6 +66,10 @@ interface DevRuntimeBackend {
   restart: () => void
 }
 
+type DevChunkList = ChunkList & {
+  version: string
+}
+
 /**
  * Map from module ID to the chunks that contain this module.
  *
@@ -584,7 +588,7 @@ function registerChunk(registration: ChunkRegistration | RuntimeParams) {
 /**
  * Subscribes to chunk list updates from the update server and applies them.
  */
-function registerChunkList(chunkList: ChunkList) {
+function registerChunkList(chunkList: DevChunkList) {
   const chunkListScript = getChunkFromRegistration(chunkList.script) as
     | ChunkListPath
     | ChunkListScript
