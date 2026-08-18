@@ -10,7 +10,7 @@ use turbopack_core::{
     output::{OutputAsset, OutputAssetsReference, OutputAssetsWithReferenced},
     source_map::{GenerateSourceMap, SourceMapAsset},
 };
-use turbopack_ecmascript::minify::{get_compress_options, minify};
+use turbopack_ecmascript::minify::{get_compress_options_for_target, minify};
 use turbopack_ecmascript_runtime::{RuntimeType, browser_runtime_options};
 
 use crate::BrowserChunkingContext;
@@ -94,11 +94,15 @@ impl EcmascriptBrowserRuntimeChunk {
         let mut code = code.build();
 
         if let MinifyType::Minify { mangle, compress } = *chunking_context.minify_type().await? {
+            let supports_arrow_functions = *environment
+                .runtime_versions()
+                .supports_arrow_functions()
+                .await?;
             code = minify(
                 code,
                 source_maps,
                 mangle,
-                get_compress_options(compress, mangle),
+                get_compress_options_for_target(compress, mangle, supports_arrow_functions),
             )?;
         }
 

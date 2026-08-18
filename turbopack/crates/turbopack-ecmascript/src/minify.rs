@@ -70,6 +70,20 @@ pub fn get_compress_options(
     })
 }
 
+pub fn get_compress_options_for_target(
+    compress: Option<CompressType>,
+    mangle: Option<MangleType>,
+    supports_arrow_functions: bool,
+) -> Option<CompressOptions> {
+    let mut options = get_compress_options(compress, mangle);
+    if let Some(options) = &mut options {
+        // SWC's default compression can turn functions and object methods into arrow functions,
+        // even when `ecma` is set to ES5.
+        options.arrows = supports_arrow_functions;
+    }
+    options
+}
+
 #[instrument(level = "info", name = "minify ecmascript code", skip_all)]
 pub fn minify(
     code: Code,
@@ -361,9 +375,46 @@ fn print_program(
 
 #[cfg(test)]
 mod tests {
-    use turbopack_core::code_builder::CodeBuilder;
+    use turbopack_core::{chunk::CompressType, code_builder::CodeBuilder};
 
-    use super::{default_compress_options, minify_with_legal_comments};
+    use super::{
+        default_compress_options, get_compress_options_for_target, minify,
+        minify_with_legal_comments,
+    };
+
+    fn minified_source(supports_arrow_functions: bool) -> Vec<u8> {
+        let mut code = CodeBuilder::default();
+        code += "const queue = { delete(value) { return value; } }; globalThis.queue = queue;";
+
+        minify(
+            code.build(),
+            false,
+            None,
+            get_compress_options_for_target(
+                Some(CompressType::Default),
+                None,
+                supports_arrow_functions,
+            ),
+        )
+        .unwrap()
+        .into_source_code()
+        .into_bytes()
+        .to_vec()
+    }
+
+    #[test]
+    fn respects_arrow_function_support() {
+        assert!(
+            minified_source(true)
+                .windows(2)
+                .any(|window| window == b"=>")
+        );
+        assert!(
+            !minified_source(false)
+                .windows(2)
+                .any(|window| window == b"=>")
+        );
+    }
 
     #[test]
     fn extracts_and_deduplicates_legal_comments() {

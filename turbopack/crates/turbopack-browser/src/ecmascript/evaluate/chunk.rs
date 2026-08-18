@@ -22,7 +22,7 @@ use turbopack_core::{
 };
 use turbopack_ecmascript::{
     chunk::{EcmascriptChunkData, EcmascriptChunkPlaceable},
-    minify::{get_compress_options, minify},
+    minify::{get_compress_options_for_target, minify},
     references::external_module::CachedExternalModule,
     utils::StringifyJs,
 };
@@ -256,11 +256,17 @@ impl EcmascriptBrowserEvaluateChunk {
         if let MinifyType::Minify { mangle, compress } =
             *this.chunking_context.minify_type().await?
         {
+            let supports_arrow_functions = *this
+                .chunking_context
+                .environment()
+                .runtime_versions()
+                .supports_arrow_functions()
+                .await?;
             code = minify(
                 code,
                 source_maps,
                 mangle,
-                get_compress_options(compress, mangle),
+                get_compress_options_for_target(compress, mangle, supports_arrow_functions),
             )?;
         }
 

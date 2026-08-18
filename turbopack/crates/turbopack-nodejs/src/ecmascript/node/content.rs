@@ -15,7 +15,7 @@ use turbopack_ecmascript::{
         EcmascriptHmrChunkContent, merger::EcmascriptChunkContentMerger,
         version::EcmascriptChunkVersion,
     },
-    minify::{get_compress_options, minify},
+    minify::{get_compress_options_for_target, minify},
     utils::StringifyJs,
 };
 
@@ -85,11 +85,17 @@ impl EcmascriptNodeChunkContent {
         if let MinifyType::Minify { mangle, compress } =
             *self.chunking_context.minify_type().await?
         {
+            let supports_arrow_functions = *self
+                .chunking_context
+                .environment()
+                .runtime_versions()
+                .supports_arrow_functions()
+                .await?;
             code = minify(
                 code,
                 source_maps,
                 mangle,
-                get_compress_options(compress, mangle),
+                get_compress_options_for_target(compress, mangle, supports_arrow_functions),
             )?;
         }
 
