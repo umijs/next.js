@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use browserslist::Distrib;
-use swc_core::ecma::preset_env::{Version, Versions};
+use swc_core::ecma::preset_env::{BrowserData, Version, Versions};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{ResolvedVc, Vc};
 use turbo_tasks_env::ProcessEnv;
@@ -386,18 +386,42 @@ macro_rules! version_at_least {
 }
 
 fn versions_support_global_this(data: &Versions) -> bool {
-    version_at_least!(data, chrome, 71)
-        && version_at_least!(data, opera, 58)
-        && version_at_least!(data, edge, 79)
-        && version_at_least!(data, firefox, 65)
-        && version_at_least!(data, safari, 12, 1)
-        && version_at_least!(data, node, 12)
-        && version_at_least!(data, deno, 1)
-        && version_at_least!(data, ios, 12, 2)
-        && version_at_least!(data, samsung, 10)
-        && version_at_least!(data, rhino, 1, 7, 14)
-        && version_at_least!(data, opera_mobile, 50)
-        && version_at_least!(data, electron, 5)
+    const fn version(major: u32, minor: u32, patch: u32) -> Option<Version> {
+        Some(Version {
+            major,
+            minor,
+            patch,
+        })
+    }
+
+    let minimum_versions = BrowserData {
+        chrome: version(71, 0, 0),
+        chrome_android: version(71, 0, 0),
+        firefox_android: version(65, 0, 0),
+        opera_android: version(58, 0, 0),
+        and_chr: version(71, 0, 0),
+        and_ff: version(65, 0, 0),
+        op_mob: version(50, 0, 0),
+        edge: version(79, 0, 0),
+        firefox: version(65, 0, 0),
+        safari: version(12, 1, 0),
+        node: version(12, 0, 0),
+        ios: version(12, 2, 0),
+        samsung: version(10, 0, 0),
+        opera: version(58, 0, 0),
+        android: version(71, 0, 0),
+        electron: version(5, 0, 0),
+        opera_mobile: version(50, 0, 0),
+        rhino: version(1, 7, 14),
+        deno: version(1, 0, 0),
+        ..Default::default()
+    };
+
+    data.iter()
+        .zip(minimum_versions.iter())
+        .all(|((_, target), (_, minimum))| {
+            target.is_none_or(|target| minimum.is_some_and(|minimum| target >= minimum))
+        })
 }
 
 #[turbo_tasks::value_impl]
@@ -574,5 +598,25 @@ mod tests {
 
         assert!(!versions_support_global_this(&ios_12_1));
         assert!(versions_support_global_this(&ios_12_2));
+    }
+
+    #[test]
+    fn detects_global_this_support_for_legacy_browser_targets() {
+        let ie_11 = Versions {
+            ie: Some(Version::from_str("11").unwrap()),
+            ..Default::default()
+        };
+        let android_70 = Versions {
+            android: Some(Version::from_str("70").unwrap()),
+            ..Default::default()
+        };
+        let android_71 = Versions {
+            android: Some(Version::from_str("71").unwrap()),
+            ..Default::default()
+        };
+
+        assert!(!versions_support_global_this(&ie_11));
+        assert!(!versions_support_global_this(&android_70));
+        assert!(versions_support_global_this(&android_71));
     }
 }
