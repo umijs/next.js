@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use browserslist::Distrib;
-use swc_core::ecma::preset_env::{Version, Versions};
+use swc_core::ecma::preset_env::{BrowserData, Version, Versions};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{ResolvedVc, Vc};
 use turbo_tasks_env::ProcessEnv;
@@ -385,8 +385,66 @@ macro_rules! version_at_least {
     };
 }
 
+fn versions_support_global_this(data: &Versions) -> bool {
+    const fn version(major: u32, minor: u32, patch: u32) -> Option<Version> {
+        Some(Version {
+            major,
+            minor,
+            patch,
+        })
+    }
+
+    let minimum_versions = BrowserData {
+        chrome: version(71, 0, 0),
+        chrome_android: version(71, 0, 0),
+        firefox_android: version(65, 0, 0),
+        opera_android: version(58, 0, 0),
+        and_chr: version(71, 0, 0),
+        and_ff: version(65, 0, 0),
+        op_mob: version(50, 0, 0),
+        edge: version(79, 0, 0),
+        firefox: version(65, 0, 0),
+        safari: version(12, 1, 0),
+        node: version(12, 0, 0),
+        ios: version(12, 2, 0),
+        samsung: version(10, 0, 0),
+        opera: version(58, 0, 0),
+        android: version(71, 0, 0),
+        electron: version(5, 0, 0),
+        opera_mobile: version(50, 0, 0),
+        rhino: version(1, 7, 14),
+        deno: version(1, 0, 0),
+        ..Default::default()
+    };
+
+    data.iter()
+        .zip(minimum_versions.iter())
+        .all(|((_, target), (_, minimum))| {
+            target.is_none_or(|target| minimum.is_some_and(|minimum| target >= minimum))
+        })
+}
+
 #[turbo_tasks::value_impl]
 impl RuntimeVersions {
+    /// Whether the environment supports `globalThis`.
+    #[turbo_tasks::function]
+    pub fn supports_global_this(&self) -> Vc<bool> {
+        // https://github.com/zloirock/core-js/blob/84e45fba098dd3a177d5cf2247d06ab8e98d3790/packages/core-js-compat/src/data.mjs#L689-L695
+        // "chrome": "71",
+        // "opera": "58",
+        // "edge": "79",
+        // "firefox": "65",
+        // "safari": "12.1",
+        // "node": "12",
+        // "deno": "1",
+        // "ios": "12.2",
+        // "samsung": "10",
+        // "rhino": "1.7.14",
+        // "opera_mobile": "50",
+        // "electron": "5"
+        Vc::cell(versions_support_global_this(&self.0))
+    }
+
     /// Whether the environment supports arrow functions.
     #[turbo_tasks::function]
     pub fn supports_arrow_functions(&self) -> Vc<bool> {
@@ -520,5 +578,45 @@ pub async fn get_current_nodejs_version(env: Vc<Box<dyn ProcessEnv>>) -> Result<
             "Expected 'node --version' to return a version starting with 'v', but received: '{}'",
             version
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_global_this_support_for_ios_targets() {
+        let ios_12_1 = Versions {
+            ios: Some(Version::from_str("12.1").unwrap()),
+            ..Default::default()
+        };
+        let ios_12_2 = Versions {
+            ios: Some(Version::from_str("12.2").unwrap()),
+            ..Default::default()
+        };
+
+        assert!(!versions_support_global_this(&ios_12_1));
+        assert!(versions_support_global_this(&ios_12_2));
+    }
+
+    #[test]
+    fn detects_global_this_support_for_legacy_browser_targets() {
+        let ie_11 = Versions {
+            ie: Some(Version::from_str("11").unwrap()),
+            ..Default::default()
+        };
+        let android_70 = Versions {
+            android: Some(Version::from_str("70").unwrap()),
+            ..Default::default()
+        };
+        let android_71 = Versions {
+            android: Some(Version::from_str("71").unwrap()),
+            ..Default::default()
+        };
+
+        assert!(!versions_support_global_this(&ie_11));
+        assert!(!versions_support_global_this(&android_70));
+        assert!(versions_support_global_this(&android_71));
     }
 }
