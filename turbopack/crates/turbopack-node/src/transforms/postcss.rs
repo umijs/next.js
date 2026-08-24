@@ -518,15 +518,84 @@ async fn postcss_executor(
     asset_context: Vc<Box<dyn AssetContext>>,
     project_path: FileSystemPath,
     config_source: PostCssConfigSource,
+    additional_config_content: Option<RcStr>,
 ) -> Result<Vc<ProcessResult>> {
     let config_asset = asset_context
         .process(
-            config_loader_source(project_path, config_source),
+            config_loader_source(project_path.clone(), config_source),
             ReferenceType::Entry(EntryReferenceSubType::Undefined),
         )
         .module()
         .to_resolved()
         .await?;
+
+    let config_asset = if let Some(additional_config_content) = additional_config_content {
+        let additional_config_asset = asset_context
+            .process(
+                config_loader_source(
+                    project_path.clone(),
+                    PostCssConfigSource::Inline(additional_config_content),
+                ),
+                ReferenceType::Entry(EntryReferenceSubType::Undefined),
+            )
+            .module()
+            .to_resolved()
+            .await?;
+        let code = r#"
+            import config from 'CONFIG';
+            import additionalConfig from 'ADDITIONAL_CONFIG';
+
+            const resolveConfig = async (value, args) =>
+                typeof value === 'function' ? await value(...args) : value;
+            const pluginsToArray = (plugins) => {
+                if (Array.isArray(plugins)) {
+                    return plugins;
+                }
+
+                if (plugins && typeof plugins === 'object') {
+                    return Object.entries(plugins).filter(([, options]) => options);
+                }
+
+                return [];
+            };
+
+            export default async (...args) => {
+                const resolvedConfig = await resolveConfig(config, args);
+                const resolvedAdditionalConfig = await resolveConfig(additionalConfig, args);
+
+                if (
+                    typeof resolvedConfig === 'undefined' ||
+                    typeof resolvedAdditionalConfig === 'undefined'
+                ) {
+                    return undefined;
+                }
+
+                return {
+                    plugins: [
+                        ...pluginsToArray(resolvedConfig.plugins),
+                        ...pluginsToArray(resolvedAdditionalConfig.plugins),
+                    ],
+                };
+            };
+        "#;
+
+        asset_context
+            .process(
+                Vc::upcast(VirtualSource::new(
+                    project_path.join(".postcss.merged.config.mjs")?,
+                    AssetContent::file(FileContent::Content(File::from(code)).cell()),
+                )),
+                ReferenceType::Internal(ResolvedVc::cell(fxindexmap! {
+                    rcstr!("CONFIG") => config_asset,
+                    rcstr!("ADDITIONAL_CONFIG") => additional_config_asset,
+                })),
+            )
+            .module()
+            .to_resolved()
+            .await?
+    } else {
+        config_asset
+    };
 
     let path = embed_file_path(rcstr!("transforms/postcss.ts"))
         .owned()
@@ -621,32 +690,39 @@ impl PostCssTransformedAsset {
         let evaluate_context = self.evaluate_context;
         let source_map = self.source_map;
 
-        let (config_source, additional_invalidation) =
-            if let Some(config_content) = self.config_content.as_ref() {
-                (
-                    PostCssConfigSource::Inline(config_content.clone()),
-                    Completion::immutable().to_resolved().await?,
-                )
-            } else if let Some(config_path) =
-                find_config_in_location(project_path.clone(), self.config_location, *self.source)
-                    .await?
-            {
-                (
+        let config_path =
+            find_config_in_location(project_path.clone(), self.config_location, *self.source)
+                .await?;
+        let (config_source, additional_config_content, additional_invalidation) =
+            match (config_path, self.config_content.as_ref()) {
+                (Some(config_path), config_content) => (
                     PostCssConfigSource::Path(config_path.clone()),
+                    config_content.cloned(),
                     config_changed(*self.config_tracing_context, config_path)
                         .to_resolved()
                         .await?,
-                )
-            } else {
-                return Ok(ProcessPostCssResult {
-                    content: self.source.content().to_resolved().await?,
-                    assets: Vec::new(),
+                ),
+                (None, Some(config_content)) => (
+                    PostCssConfigSource::Inline(config_content.clone()),
+                    None,
+                    Completion::immutable().to_resolved().await?,
+                ),
+                (None, None) => {
+                    return Ok(ProcessPostCssResult {
+                        content: self.source.content().to_resolved().await?,
+                        assets: Vec::new(),
+                    }
+                    .cell());
                 }
-                .cell());
             };
 
-        let postcss_executor =
-            postcss_executor(*evaluate_context, project_path.clone(), config_source).module();
+        let postcss_executor = postcss_executor(
+            *evaluate_context,
+            project_path.clone(),
+            config_source,
+            additional_config_content,
+        )
+        .module();
 
         let entries =
             get_evaluate_entries(postcss_executor, *evaluate_context, **node_backend, None)
