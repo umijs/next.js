@@ -38,6 +38,7 @@ use turbopack_node::{
     transforms::{postcss::PostCssTransform, webpack::WebpackLoaders},
 };
 use turbopack_resolve::resolve_options_context::ResolveOptionsContext;
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use turbopack_wasm::source::WebAssemblySourceType;
 
 use crate::evaluate_context::{config_tracing_module_context, node_evaluate_asset_context};
@@ -262,6 +263,7 @@ impl ModuleOptions {
                     ref module_css_condition,
                     lightningcss_features,
                     module_css_debuggable_idents,
+                    ref css_modules_pattern,
                     ..
                 },
             ref static_url_tag,
@@ -478,6 +480,9 @@ impl ModuleOptions {
                     )
                 }
 
+                rule_conditions.push(RuleCondition::not(RuleCondition::ReferenceType(
+                    ReferenceTypeCondition::Url(Some(UrlReferenceSubType::CssUrl)),
+                )));
                 rule_conditions.push(RuleCondition::not(RuleCondition::ResourceIsVirtualSource));
                 rule_conditions.push(module_css_external_transform_conditions.clone());
 
@@ -521,6 +526,8 @@ impl ModuleOptions {
                                     ecmascript_options_vc,
                                     environment,
                                     lightningcss_features,
+                                    module_css_debuggable_idents,
+                                    css_modules_pattern.clone(),
                                 )
                                 .await?,
                         )
@@ -696,6 +703,7 @@ impl ModuleOptions {
             // generated JS loader that references an embedded runtime helper, which is compiled
             // into the output and has no path on disk, so tracing it would produce a file
             // reference that cannot be resolved to a real file.
+            #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
             ModuleRule::new(
                 RuleCondition::any(vec![
                     RuleCondition::ResourcePathEndsWith(".wasm".to_string()),
@@ -709,6 +717,7 @@ impl ModuleOptions {
                     })]
                 },
             ),
+            #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
             ModuleRule::new(
                 RuleCondition::any(vec![RuleCondition::ResourcePathEndsWith(
                     ".wat".to_string(),
@@ -865,6 +874,7 @@ impl ModuleOptions {
                         environment,
                         lightningcss_features,
                         module_css_debuggable_idents,
+                        css_modules_pattern: css_modules_pattern.clone(),
                     })],
                 ),
                 ModuleRule::new(
@@ -877,6 +887,7 @@ impl ModuleOptions {
                         environment,
                         lightningcss_features,
                         module_css_debuggable_idents,
+                        css_modules_pattern: None,
                     })],
                 ),
             ]);
@@ -913,12 +924,13 @@ impl ModuleOptions {
                                     *execution_context,
                                     Some(import_map),
                                     None,
-                                    Layer::new(rcstr!("postcss")),
-                                    true,
+                                    Layer::new(rcstr!("webpack_loaders")),
+                                    cfg!(all(target_family = "wasm", target_os = "unknown")),
                                 ),
                                 config_tracing_module_context(*execution_context),
                                 *execution_context,
                                 options.config_location,
+                                options.config_content.clone(),
                                 matches!(css_source_maps, SourceMapsType::Full),
                             )
                             .to_resolved()
@@ -942,6 +954,7 @@ impl ModuleOptions {
                         environment,
                         lightningcss_features,
                         module_css_debuggable_idents,
+                        css_modules_pattern: css_modules_pattern.clone(),
                     })],
                 ),
                 // Ecmascript CSS Modules referencing the actual CSS module to include it
@@ -957,6 +970,7 @@ impl ModuleOptions {
                         environment,
                         lightningcss_features,
                         module_css_debuggable_idents,
+                        css_modules_pattern: css_modules_pattern.clone(),
                     })],
                 ),
                 // Ecmascript CSS Modules referencing the actual CSS module to list the classes
@@ -972,6 +986,7 @@ impl ModuleOptions {
                         environment,
                         lightningcss_features,
                         module_css_debuggable_idents,
+                        css_modules_pattern: css_modules_pattern.clone(),
                     })],
                 ),
                 ModuleRule::new(
@@ -988,6 +1003,7 @@ impl ModuleOptions {
                         environment,
                         lightningcss_features,
                         module_css_debuggable_idents,
+                        css_modules_pattern: None,
                     })],
                 ),
             ]);
