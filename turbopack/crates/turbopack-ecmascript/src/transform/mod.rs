@@ -150,6 +150,8 @@ pub enum ReactCompilerTarget {
     React19,
     #[serde(rename = "18")]
     React18,
+    #[serde(rename = "17")]
+    React17,
 }
 
 impl ReactCompilerTarget {
@@ -157,6 +159,7 @@ impl ReactCompilerTarget {
         match self {
             ReactCompilerTarget::React19 => "19",
             ReactCompilerTarget::React18 => "18",
+            ReactCompilerTarget::React17 => "17",
         }
     }
 }
