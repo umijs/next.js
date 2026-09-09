@@ -881,13 +881,13 @@ impl ChunkingContext for BrowserChunkingContext {
                     (None, Some(ContentHashing::Direct { length })) => {
                         let hash = asset
                             .content()
-                            .content_hash(no_hash_salt(), HashAlgorithm::Xxh3Hash128Base38)
+                            .content_hash(*this.hash_salt, HashAlgorithm::Xxh3Hash128Base38)
                             .await?;
                         let hash = hash.as_ref().context(
                             "chunk_path requires an asset with file content when content hashing \
                              is enabled",
                         )?;
-                        let hash = &hash[..length as usize];
+                        let hash = &hash[..min(length as usize, hash.len())];
                         if let Some(prefix) = prefix {
                             format!("{prefix}-{hash}")
                         } else {
