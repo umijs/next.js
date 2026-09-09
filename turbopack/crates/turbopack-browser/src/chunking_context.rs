@@ -804,11 +804,11 @@ impl ChunkingContext for BrowserChunkingContext {
         let ChunkPathInfo {
             root_path,
             chunk_root_path,
-            chunk_content_hashing: _,
+            chunk_content_hashing,
         } = &*self.chunk_path_info().await?;
 
         let output_name = ident
-            .output_name(root_path.clone(), prefix, extension.clone())
+            .output_name(root_path.clone(), prefix.clone(), extension.clone())
             .owned()
             .await?;
 
@@ -850,8 +850,9 @@ impl ChunkingContext for BrowserChunkingContext {
                     }
                 };
 
-                match filename_template {
-                    Some(filename) => {
+                // Explicit templates take precedence over the default content-hashed names.
+                match (filename_template, *chunk_content_hashing) {
+                    (Some(filename), _) => {
                         let mut filename = filename.to_string();
                         let name = escape_file_path(name);
 
@@ -877,10 +878,31 @@ impl ChunkingContext for BrowserChunkingContext {
 
                         filename
                     }
-                    None => name.to_string(),
+                    (None, Some(ContentHashing::Direct { length })) => {
+                        let hash = asset
+                            .content()
+                            .content_hash(no_hash_salt(), HashAlgorithm::Xxh3Hash128Base38)
+                            .await?;
+                        let hash = hash.as_ref().context(
+                            "chunk_path requires an asset with file content when content hashing \
+                             is enabled",
+                        )?;
+                        let hash = &hash[..length as usize];
+                        if let Some(prefix) = prefix {
+                            format!("{prefix}-{hash}")
+                        } else {
+                            hash.to_string()
+                        }
+                    }
+                    (None, None) => name.to_string(),
                 }
             }
-            None => output_name.to_string(),
+            None => {
+                if chunk_content_hashing.is_some() {
+                    bail!("chunk_path requires an asset when content hashing is enabled");
+                }
+                output_name.to_string()
+            }
         };
 
         if !filename.ends_with(extension.as_str()) {
