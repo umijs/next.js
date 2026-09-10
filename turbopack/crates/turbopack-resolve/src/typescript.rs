@@ -279,12 +279,14 @@ pub async fn tsconfig_resolve_options(
             };
             for (key, value) in paths.iter() {
                 if let JsonValue::Array(vec) = value {
-                    let entries = vec
+                    let mut has_declaration = false;
+                    let entries: Vec<_> = vec
                         .iter()
                         .filter_map(|entry| {
                             let entry = entry.as_str();
 
                             if entry.map(|e| e.ends_with(".d.ts")).unwrap_or_default() {
+                                has_declaration = true;
                                 return None;
                             }
 
@@ -298,10 +300,14 @@ pub async fn tsconfig_resolve_options(
                             })
                         })
                         .collect();
-                    all_paths.insert(
-                        RcStr::from(key.as_str()),
-                        ImportMapping::primary_alternatives(entries, Some(context_dir.clone())),
-                    );
+                    let mapping = if has_declaration && entries.is_empty() {
+                        // Keep the alias's precedence, but let resolution fall back to the
+                        // original request when all candidates are declaration files.
+                        ImportMapping::Alternatives(Vec::new())
+                    } else {
+                        ImportMapping::primary_alternatives(entries, Some(context_dir.clone()))
+                    };
+                    all_paths.insert(RcStr::from(key.as_str()), mapping);
                 } else {
                     TsConfigIssue {
                         severity: IssueSeverity::Warning,
