@@ -1982,11 +1982,14 @@ where
                     && meta_prop.as_str() == "url"
                 {
                     let pat = js_value_to_pattern(url);
-                    // Every alternative must constrain resolution. A constant fallback does not
-                    // constrain another branch that can be an arbitrary runtime URL.
-                    let has_constant_parts = match &pat {
-                        Pattern::Alternatives(alternatives) => {
-                            alternatives.iter().all(Pattern::has_constant_parts)
+                    // An undefined default does not constrain an otherwise dynamic URL. Keep
+                    // other static alternatives so their assets are still resolved and emitted.
+                    let has_constant_parts = match url {
+                        JsValue::Alternatives { values, .. } if pat.has_dynamic_parts() => {
+                            values.iter().any(|value| {
+                                !matches!(value, JsValue::Constant(JsConstantValue::Undefined))
+                                    && js_value_to_pattern(value).has_constant_parts()
+                            })
                         }
                         _ => pat.has_constant_parts(),
                     };
