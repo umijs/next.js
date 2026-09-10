@@ -1982,7 +1982,15 @@ where
                     && meta_prop.as_str() == "url"
                 {
                     let pat = js_value_to_pattern(url);
-                    if !pat.has_constant_parts() {
+                    // Every alternative must constrain resolution. A constant fallback does not
+                    // constrain another branch that can be an arbitrary runtime URL.
+                    let has_constant_parts = match &pat {
+                        Pattern::Alternatives(alternatives) => {
+                            alternatives.iter().all(Pattern::has_constant_parts)
+                        }
+                        _ => pat.has_constant_parts(),
+                    };
+                    if !has_constant_parts {
                         let (args, hints) = explain_args(args);
                         handler.span_warn_with_code(
                             span,
